@@ -1,0 +1,72 @@
+{
+  "name": "volt-pdf-reader",
+  "productName": "Volt",
+  "version": "1.0.0",
+  "description": "Fast, private, ad-free PDF reader/editor with AI built in — powered by your local LLM.",
+  "author": "Volt",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "smoke:browser": "electron . --smoke-browser",
+    "update:vendor": "node scripts/update-vendor.mjs",
+    "check:vendor": "node scripts/update-vendor.mjs --check",
+    "test:watch": "node scripts/test-file-watcher.mjs",
+    "test:utils": "node scripts/test-utils.mjs",
+    "test:artifacts": "node scripts/test-artifact-regression.mjs",
+    "check:launchers": "node ../scripts/check-launchers.cjs",
+    "gen:sw": "node scripts/gen-sw.mjs --write",
+    "auto:vendor": "node scripts/auto-update.cjs --smoke-exe \"node_modules/electron/dist/electron.exe\"",
+    "dist": "electron-builder --win nsis",
+    "dist:dir": "electron-builder --win dir"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.volt.pdfreader",
+    "productName": "Volt",
+    "asar": true,
+    "asarUnpack": [
+      "vendor/**"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "css/**/*",
+      "js/**/*",
+      "vendor/**/*",
+      "assets/**/*",   "samples/**/*",
+   "scripts/**/*",
+   "sw.js",
+   "manifest.json",
+   "package.json"
+  ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "assets/volt.ico",
+      "artifactName": "Volt-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Volt",
+      "deleteAppDataOnUninstall": false
+    },
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "Volt PDF",
+        "description": "PDF Document",
+        "icon": "assets/volt.ico",
+        "role": "Viewer"
+      }
+    ]
+  }
+}

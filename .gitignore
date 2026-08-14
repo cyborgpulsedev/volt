@@ -1,0 +1,22 @@
+# dependencies / runtime
+node_modules/
+
+# build & packaging output
+dist/
+
+# runtime logs (smoke output, vendor updates, preview server)
+logs/
+*.log
+serve-preview.log
+
+# Windows reserved-name junk artifact (2-byte stray file)
+CON
+
+# vendor updater transient state (download staging / swap backup / pending flag)
+pdf-viewer/vendor/.staging/
+pdf-viewer/vendor/.backup/
+pdf-viewer/vendor/.update-pending
+
+# OS / editor cruft
+Thumbs.db
+.DS_Store

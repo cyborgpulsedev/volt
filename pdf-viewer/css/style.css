@@ -1233,14 +1233,25 @@ body.annotating .page-text-layer { user-select: none; }
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   z-index: 9;
-  opacity: 0;
-  transform: translateY(4px);
+  /* Visible as soon as something is SELECTED — .area-select only exists while
+     an annotation is selected, so selection is already the deliberate act that
+     should reveal its controls. These were hover-only (opacity:0 until
+     :hover/:focus-within), and the target is a thin outline around a
+     highlight: the palette was effectively undiscoverable, so "I can't change
+     colours / can't see what colour it is" was true in practice even though
+     the swatches were built and the current one marked. */
+  opacity: 1;
+  transform: translateY(0);
   transition: opacity 0.12s var(--ease), transform 0.12s var(--ease);
-  pointer-events: none;
+  pointer-events: auto;
 }
-.area-select:hover .area-colors,
-.area-select:focus-within .area-colors { opacity: 1; transform: translateY(0); pointer-events: auto; }
 .area-colors .area-swatch { width: 15px; height: 15px; }
+/* which colour this annotation currently IS — the check half of check/change.
+   Two rings so the mark reads on both a light and a dark swatch, and against
+   either theme's panel. */
+.area-colors .area-swatch.active {
+  box-shadow: 0 0 0 2px var(--bg-3), 0 0 0 3.5px var(--text);
+}
 
 /* text-edit tool: spans stay clickable in Text mode and the line under the
    cursor gets a dashed outline so it's obvious what will be edited. The

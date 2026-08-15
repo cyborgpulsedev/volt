@@ -140,6 +140,9 @@
 
       // overlay click handling for notes (via delegated click on pages container)
       app.elements.pages.addEventListener("click", (e) => {
+        // the click that closes a drag is not a click on the thing (see the
+        // stamp in _endEditDrag) — moving a field must never reopen its editor
+        if (this._lastDragEndAt && Date.now() - this._lastDragEndAt < 300) return;
         const pin = e.target.closest(".note-pin");
         if (pin && this.mode === "select") {
           const ann = this.list.find((a) => a.id === pin.dataset.id);
@@ -1435,6 +1438,11 @@
         cover.dataset.id = ann.id;
         layer.insertBefore(cover, layer.firstChild);
       }
+      // paper, not white: sampled once at edit time and stored on the
+      // annotation so re-paints (zoom, re-render, reload) never re-read the
+      // canvas and can't drift between paints
+      if (!ann.paper) ann.paper = this._paperUnder(span, wrap);
+      cover.style.background = ann.paper;
       const r = ann.origRect || ann.rect;
       if (r) {
         const a = this._pdfToLocal(wrap, r.x, r.y);
@@ -1505,6 +1513,7 @@
           const c = document.createElement("div");
           c.className = "volt-text-cover";
           c.dataset.id = ann.id + ":" + k;
+          c.style.background = ann.paper || "#ffffff"; // same paper as the anchor line
           c.style.left = (Math.min(a.x, b.x) - 2) + "px";
           c.style.top = (Math.min(a.y, b.y) - 2) + "px";
           c.style.width = (Math.abs(b.x - a.x) + 4) + "px";
@@ -1544,6 +1553,9 @@
         let bgKey = 0, bgN = -1;
         for (const [k, v] of hist) if (v > bgN) { bgN = v; bgKey = k; }
         const bg = [(bgKey >> 10 & 31) << 3 | 4, (bgKey >> 5 & 31) << 3 | 4, (bgKey & 31) << 3 | 4];
+        // the PAPER under this line, for the edit's cover (see _paperUnder) —
+        // computed here anyway, so nothing extra is read back from the canvas
+        this._lastSampledPaper = "#" + bg.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
         // ink = pixels far enough from the background; averaging only the
         // core ink pixels (anti-aliased edges are near-bg and excluded) gives
         // the true text color — dark text on light pages AND light text on
@@ -1560,6 +1572,20 @@
       } catch (e) {
         return null;
       }
+    },
+
+    /** The paper color under a span, read off the rendered canvas: the most
+        frequent color in the span's box, which is the page background even
+        when the box clips a glyph. The text edit's cover used a hardcoded
+        white, so on any page that is not pure white — a scan, off-white
+        stock, a tinted block — the cover sat over the old line as a visible
+        white patch instead of erasing it, which reads as "it didn't cover the
+        line". Returns a hex string, or "#ffffff" when the canvas can't be
+        read (tainted/absent — white is the old behavior, so failure is inert). */
+    _paperUnder(span, wrap) {
+      this._lastSampledPaper = null;
+      try { this._spanRenderedColor(span, wrap); } catch (e) { /* best-effort */ }
+      return this._lastSampledPaper || "#ffffff";
     },
 
     /** PDF-space bbox of a text-layer span, from its rendered box corners
@@ -2283,6 +2309,14 @@
       this._editBlurRef = null;
       this._editDrag = null;
       this._removeSizeBadge(d); // the live size readout belongs to the drag
+      // A `click` fires after mouseup whenever the down and up hit the same
+      // element — the distance moved in between is irrelevant, so DRAGGING a
+      // placed form field still produced a click and the delegated handler
+      // below reopened its editor every single time the user moved it. Stamp
+      // the moved drag so that click can be ignored. Timestamped rather than a
+      // one-shot boolean: a drag released outside the page fires no click at
+      // all, and a stuck flag would swallow the next real one.
+      if (d && d.moved) this._lastDragEndAt = Date.now();
       if (!d || !d.quads) return;
       if (!apply || !d.moved || d.endX === undefined) {
         if (d.moved) this._refreshSelection(); // cancel: the box must snap back to the unmoved quads

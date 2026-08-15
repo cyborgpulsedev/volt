@@ -141,6 +141,8 @@
     privatePort: null,          // the private instance's port — persisted so the baseUrl stays stable across restarts
     historyLimit: 40,           // transcript cap per document (storage, backup, restore)
     noAutoRestart: false,       // version banner: count down and auto-restart, or always ask first
+    updateCheckStartup: true,   // desktop updater: check for a newer release on startup (off = only when asked)
+    updateDownloadMetered: false, // desktop updater: auto-download even on a metered/slow connection (off = offer instead)
     systemPrompt: "You are Volt, an expert assistant inside a PDF reader. Ground every answer in the provided document excerpts and cite the page number like [p.3]. If the answer isn't in the excerpts, say so and suggest where to look. Be concise, clear, and honest.",
   };
 
@@ -397,6 +399,8 @@
       this._app().elements.setMaxctx.value = this.settings.maxContextChars;
       this._app().elements.setHistory.value = String(this.settings.historyLimit || 40);
       this._app().elements.setNoAutoRestart.checked = !!this.settings.noAutoRestart;
+      this._app().elements.setUpdateStartup.checked = this.settings.updateCheckStartup !== false;
+      this._app().elements.setUpdateMetered.checked = !!this.settings.updateDownloadMetered;
       this._app().elements.setSysprompt.value = this.settings.systemPrompt;
       const preset = PRESETS[this.settings.provider] || PRESETS.custom;
       this._fillModelSuggestions(preset.models);
@@ -423,6 +427,8 @@
         maxContextChars: parseInt(els.setMaxctx.value, 10) || 8000,
         historyLimit: this._historyLimit(parseInt(els.setHistory.value, 10)),
         noAutoRestart: !!els.setNoAutoRestart.checked,
+        updateCheckStartup: !!els.setUpdateStartup.checked,
+        updateDownloadMetered: !!els.setUpdateMetered.checked,
         systemPrompt: els.setSysprompt.value,
       };
       // the private instance only makes sense for the Ollama provider — if the
@@ -465,6 +471,9 @@
         }
       }
       this._closeSettings();
+      // update preferences (check-on-startup, metered downloads) changed —
+      // push them to main so the desktop updater applies them immediately
+      if (this._app()._pushUpdatePrefs) this._app()._pushUpdatePrefs();
       this._renderModelLine();
       this._app().toast("AI settings saved", "ok");
     },
@@ -2470,6 +2479,7 @@
       { type: "function", function: { name: "search_text", description: "Find which pages contain a phrase, with a short snippet of each match. Use before answering questions about specific terms.", parameters: { type: "object", properties: { query: { type: "string", description: "The phrase to search for" } }, required: ["query"] } } },
       { type: "function", function: { name: "get_annotations", description: "List the document's annotations (highlights, notes, rectangles) with page and text.", parameters: { type: "object", properties: {} } } },
       { type: "function", function: { name: "add_highlight", description: "Highlight the given phrase on a page, like the user dragging the highlight tool. The phrase must appear in the page's text.", parameters: { type: "object", properties: { page: { type: "integer", description: "1-based page number" }, text: { type: "string", description: "Exact phrase to highlight" } }, required: ["page", "text"] } } },
+      { type: "function", function: { name: "edit_text", description: "Change a phrase on a page, exactly like the user with the Text tool (Markup ▸ Text). The phrase must appear in the page's text — check get_page_text first for the exact wording. Only the FIRST match on the page is changed and the rest of the line is preserved. The edit is undoable by the user (Ctrl+Z) and is burned into the exported/saved PDF. Optional font ('match' keeps the original font, or 'helvetica'/'times'/'courier'), bold, italic, size (points), and color (hex) restyle the changed text.", parameters: { type: "object", properties: { page: { type: "integer", description: "1-based page number" }, find: { type: "string", description: "Exact phrase currently on the page to change" }, replace: { type: "string", description: "The new text to put in its place (empty deletes the phrase)" }, font: { type: "string", enum: ["match", "helvetica", "times", "courier"], description: "Optional font family (default: match the original)" }, bold: { type: "boolean", description: "Optional bold style" }, italic: { type: "boolean", description: "Optional italic style" }, size: { type: "number", description: "Optional font size in points" }, color: { type: "string", description: "Optional text color as a hex value like #111827" } }, required: ["page", "find", "replace"] } } },
       { type: "function", function: { name: "add_note", description: "Attach a sticky note to a page.", parameters: { type: "object", properties: { page: { type: "integer", description: "1-based page number" }, text: { type: "string" } }, required: ["page", "text"] } } },
       { type: "function", function: { name: "remove_annotations", description: "Delete annotations. type can be 'all', 'highlight', 'note', or 'rect'.", parameters: { type: "object", properties: { type: { type: "string" } }, required: ["type"] } } },
       { type: "function", function: { name: "navigate_to_page", description: "Jump the viewer to a page; the user sees it scroll there.", parameters: { type: "object", properties: { page: { type: "integer", description: "1-based page number" } }, required: ["page"] } } },
@@ -2535,6 +2545,125 @@
           Ann._mutate(() => Ann.list.push(ann));
           return out({ ok: true, page, matchedLines: quads.length, text: ann.text });
         }
+        case "edit_text": {
+          const page = Math.max(1, Number(args.page) || 1);
+          const find = String(args.find || "").replace(/\s+/g, " ").trim();
+          const replace = String(args.replace ?? "");
+          if (!find) return out({ ok: false, error: "find is required" });
+          if (!app.currentDoc) return out({ ok: false, error: "no document open" });
+          const wrap = await this._ensurePageWrap(page);
+          if (!wrap) return out({ ok: false, error: `page ${page} is not available` });
+          const layer = wrap.querySelector(".page-text-layer");
+          if (!layer) return out({ ok: false, error: `page ${page} has no text layer` });
+          const all = [...layer.querySelectorAll("span")];
+          const norm = (s) => String(s || "").replace(/\s+/g, " ");
+          // text-bearing spans with their REAL layer index (blanking and
+          // re-painting address spans by index — pdf.js rebuilds them
+          // deterministically per page, so edits survive zoom/scroll/rotate)
+          const spans = [];
+          for (let i = 0; i < all.length; i++) {
+            if (all[i].textContent.trim()) spans.push({ el: all[i], index: i, text: norm(all[i].textContent) });
+          }
+          if (!spans.length) return out({ ok: false, error: `page ${page} has no selectable text (try OCR first)` });
+          const q = find, ql = q.toLowerCase();
+          // 1) single-span match — the common case, the phrase sits inside one
+          //    text run (pdf.js merges a line's runs into one span for short
+          //    lines, so most whole-line phrases hit here)
+          let hit = null;
+          for (const s of spans) {
+            let idx = s.text.indexOf(q);
+            if (idx < 0) idx = s.text.toLowerCase().indexOf(ql);
+            if (idx >= 0) { hit = { span: s, idx }; break; }
+          }
+          if (!hit) {
+            // 2) the phrase crosses span boundaries — match within a line
+            //    (spans grouped by baseline, exactly like add_highlight). The
+            //    line is joined first with a single space (the same text the
+            //    model reads from get_page_text), then with no space at all
+            //    for PDFs whose content stream splits words without spaces.
+            const wrect = wrap.getBoundingClientRect();
+            const boxes = spans.map((s) => {
+              const r = s.el.getBoundingClientRect();
+              return { x1: r.left - wrect.left, y1: r.top - wrect.top, x2: r.left - wrect.left + r.width, y2: r.top - wrect.top + r.height, text: s.text, el: s.el, index: s.index };
+            });
+            const lines = Ann._groupSpansIntoLines(boxes);
+            for (const ln of lines) {
+              const items = ln.items;
+              for (const sep of [" ", ""]) {
+                let joined = "", starts = [];
+                for (const it of items) { starts.push(joined.length); joined += it.text + sep; }
+                let idx = joined.indexOf(q);
+                if (idx < 0) idx = joined.toLowerCase().indexOf(ql);
+                if (idx < 0) continue;
+                const end = idx + q.length;
+                const covered = [];
+                for (let k = 0; k < items.length; k++) {
+                  const s0 = starts[k], s1 = s0 + items[k].text.length;
+                  if (s1 > idx && s0 < end) covered.push(k);
+                }
+                if (!covered.length) continue;
+                const anchorK = covered[0];
+                const anchor = items[anchorK];
+                const aStart = starts[anchorK], aLen = anchor.text.length;
+                const cs = Math.max(0, idx - aStart);
+                const ce = Math.min(aLen, end - aStart);
+                hit = {
+                  span: { el: anchor.el, index: anchor.index, text: anchor.text },
+                  idx: cs,
+                  // the OTHER covered spans get blanked so their original
+                  // glyphs never re-draw over the replacement
+                  lineCovered: covered.map((k) => items[k].index).filter((i) => i !== anchor.index),
+                };
+                break;
+              }
+              if (hit) break;
+            }
+          }
+          if (!hit) return out({ ok: false, error: `no text matching "${find}" on page ${page} (check get_page_text for the exact wording)` });
+          const anchor = hit.span;
+          const newText = anchor.text.slice(0, hit.idx) + replace + anchor.text.slice(hit.idx + q.length);
+          // geometry: the anchor's own bbox, or the union of the covered line
+          //    run so the white cover erases ALL of the original glyphs
+          let rect = Ann._spanBboxPdf(anchor.el, wrap);
+          if (hit.lineCovered && hit.lineCovered.length) {
+            const union = { ...rect };
+            for (const bi of hit.lineCovered) {
+              const s = all[bi];
+              if (!s) continue;
+              const cr = Ann._spanBboxPdf(s, wrap);
+              const x1 = Math.min(union.x, cr.x), y1 = Math.min(union.y, cr.y);
+              const x2 = Math.max(union.x + union.w, cr.x + cr.w), y2 = Math.max(union.y + union.h, cr.y + cr.h);
+              union.x = x1; union.y = y1; union.w = x2 - x1; union.h = y2 - y1;
+            }
+            rect = union;
+          }
+          const ann = {
+            id: Utils.uid(), type: "text", page, spanIndex: anchor.index,
+            original: anchor.el.textContent, origRect: rect,
+            text: newText,
+            font: Ann._matchFontPs(anchor.el._voltFontPs || "Helvetica"),
+            size: anchor.el._voltSize || 11,
+            // match the line's actual rendered color (sampled from the canvas)
+            // instead of forcing near-black, so AI edits keep the doc's look
+            color: Ann._spanRenderedColor(anchor.el, wrap) || "#111827",
+            origFontPs: anchor.el._voltFontPs || "Helvetica",
+            createdAt: Date.now(),
+          };
+          if (hit.lineCovered && hit.lineCovered.length) ann.blankSpanIndexes = hit.lineCovered;
+          // optional restyle — everything the in-place editor offers
+          if (args.font && ["helvetica", "times", "courier"].includes(args.font)) ann.font.family = args.font;
+          if (args.bold != null) ann.font.bold = !!args.bold;
+          if (args.italic != null) ann.font.italic = !!args.italic;
+          if (args.size) ann.size = Math.max(4, Math.min(200, Number(args.size) || 11));
+          if (args.color && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(args.color)) ann.color = args.color;
+          // longer-than-the-line replacements wrap across the following lines
+          // (geometry frozen now — deterministic re-render + backup-safe)
+          const wr = Ann._computeTextEditWrap(ann, layer, wrap, anchor.el);
+          if (wr && wr.length > 1) ann.wrap = wr;
+          Ann._mutate(() => Ann.list.push(ann)); // the user can Ctrl+Z this away
+          this._app().toast("AI edited text on page " + page + " — Ctrl+Z to undo", "ok");
+          return out({ ok: true, page, find, replacedWith: replace, lineText: newText, blankedSpans: (ann.blankSpanIndexes || []).length });
+        }
         case "add_note": {
           const page = Math.max(1, Number(args.page) || 1);
           const text = String(args.text || "");
@@ -2565,6 +2694,11 @@
         to ~4s so the AI can highlight a page the user hasn't scrolled to. */
     async _ensurePageWrap(page) {
       const app = this._app();
+      // an undo/redo/clear may have an async text-layer rebuild in flight
+      // (rebuildTextLayers chains them) — await it so tools never read a
+      // half-cleared layer and mistake it for "no text on this page". When
+      // no rebuild is pending the chain resolves immediately.
+      if (app && app._rebuildChain) await app._rebuildChain.catch(() => {});
       let wrap = app.rendered.get(page)?.wrap;
       if (wrap) return wrap;
       if (app.goToPage) app.goToPage(page, false);

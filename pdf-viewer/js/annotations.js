@@ -14,6 +14,7 @@
     signature: { color: "#5b4fd6", alpha: 1, label: "Signature" },
     date: { color: "#334155", alpha: 1, label: "Date stamp" },
     form: { color: "#5b4fd6", alpha: 1, label: "Form field" },
+    text: { color: "#111827", alpha: 1, label: "Text edit" },
   };
 
   const PALETTE = {
@@ -159,6 +160,22 @@
 
       this._wireSignatureModal();
       this._wireFormModal();
+      this._wireTextEditor();
+      // hover affordance for the Text tool: outline the line under the cursor
+      app.elements.pages.addEventListener("mouseover", (e) => {
+        if (this.mode !== "text") return;
+        const sp = e.target && e.target.closest ? e.target.closest(".page-text-layer span") : null;
+        const layer = sp && sp.closest(".page-text-layer");
+        if (layer && layer._voltHover !== sp) {
+          if (layer._voltHover) layer._voltHover.classList.remove("volt-text-hover");
+          layer._voltHover = sp;
+          sp.classList.add("volt-text-hover");
+        }
+      });
+      app.elements.pages.addEventListener("mouseout", (e) => {
+        const layer = e.target.closest ? e.target.closest(".page-text-layer") : null;
+        if (layer && layer._voltHover) { layer._voltHover.classList.remove("volt-text-hover"); layer._voltHover = null; }
+      });
     },
 
     _app() { return global.Volt.App; },
@@ -189,10 +206,16 @@
           : mode === "rect" ? " — click or drag = rectangle · Shift = square · Alt = from center"
             : mode === "signature" ? " — click the page to place it"
               : mode === "date" ? " — click the page to stamp today's date"
-                : mode === "form" ? " — drag on the page to draw the field" : " — drag over text");
-        app.elements.scroller.style.cursor = "crosshair";
+                : mode === "form" ? " — drag on the page to draw the field"
+                  : mode === "text" ? " — click a line of text to edit its wording, font, size or color" : " — drag over text");
+        app.elements.scroller.style.cursor = mode === "text" ? "text" : "crosshair";
       }
+      // the text tool needs the spans clickable (annotating normally disables
+      // their pointer events so drags draw) — a dedicated body class re-enables
+      // them, and the hover affordance outlines the line under the cursor
+      document.body.classList.toggle("editing-text", mode === "text");
       this._closeNote();
+      if (mode !== "text") this._closeTextEditor(false);
     },
 
     /* ── document lifecycle ─────────────────────────────────── */
@@ -231,6 +254,20 @@
       this._app().renderAllAnnotations();
       this.refreshNotesList(); // the notes pane must reflect the change immediately (a deleted card can't linger)
       this._refreshSelection(); // keep the edit box glued to its highlight
+      this._syncTextEdits();
+    },
+    /** Keep the on-screen text layer in lockstep with the annotation list:
+        an edit removed by undo/redo/clear (or a pages-manager rebuild) must
+        vanish from the page without waiting for the next zoom/scroll
+        re-render. Only fires when the text-edit set actually changed, and it
+        rebuilds the layers from the embedded text (which restores the
+        original line) before re-applying the surviving edits. */
+    _syncTextEdits() {
+      const key = this.list.filter((a) => a.type === "text").map((a) => a.id + ":" + a.text).join("|");
+      if (key === this._lastTextEditsKey) return;
+      this._lastTextEditsKey = key;
+      const app = this._app();
+      if (app.rebuildTextLayers) app.rebuildTextLayers().catch(() => {});
     },
     _scheduleSave() {
       clearTimeout(this._savedTimer);
@@ -265,6 +302,14 @@
 
     beginDrag(e, wrap) {
       if (this.mode === "select") return;
+      // Text tool: a click on a text line opens the in-place editor — no drag
+      // geometry, no preview box. The target is the span itself (editing-text
+      // re-enables span pointer events that annotating normally disables).
+      if (this.mode === "text") {
+        const span = e.target && e.target.closest ? e.target.closest(".page-text-layer span") : null;
+        if (span && span._voltEditable !== false) this._openTextEditor(span, wrap);
+        return;
+      }
       e.preventDefault();
       const rect = wrap.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -1193,6 +1238,533 @@
       b.style.left = Math.max(0, bx) + "px";
       b.style.top = Math.max(0, by) + "px";
     },
+    /* ── text editing (Markup ▸ Text) ─────────────────────────
+       Click a line of text in Text mode: the line's span becomes editable in
+       a small popover (wording, font family, bold/italic, size, color).
+       Applying stores a {type:"text"} annotation carrying the ORIGINAL text
+       and its PDF-space bbox plus the new text + chosen formatting. The
+       on-screen layer re-applies every edit after each rebuild (zoom, scroll,
+       rotate) by span index — pdf.js rebuilds spans deterministically per
+       page — painting a paper-colored cover over the original glyphs and the
+       new text on top. The PDF export burns the same cover + a matched
+       standard font. The document's embedded text (search, AI, Ctrl+A) is
+       untouched — the edit is a visual + export overlay, like the other
+       annotations. */
+
+    _textEditing: null, // {span, wrap, layer, pageNum, spanIndex, existing, originalText, matched, font, size, color}
+
+    /** Map every rendered span to its item's font (PostScript name via
+        page.commonObjs) + size, walking items and spans in lockstep (pdf.js
+        merges a line's items into one span, so a span's text = the
+        concatenation of its items' text). Called from app.js after each
+        text-layer render. Never throws. */
+    annotateLayerFonts(page, container, textContent) {
+      try {
+        const items = (textContent && textContent.items) || [];
+        const spans = [...container.querySelectorAll("span")];
+        let i = 0;
+        for (const sp of spans) {
+          const target = sp.textContent || "";
+          let acc = "", start = i;
+          while (i < items.length && acc.length < target.length) {
+            acc += items[i].str || "";
+            i++;
+          }
+          const it = items[start] || items[i];
+          if (it) {
+            sp._voltSize = it.transform && it.transform[0] ? it.transform[0] : 11;
+            try {
+              const f = page.commonObjs && page.commonObjs.get(it.fontName);
+              sp._voltFontPs = (f && (f.name || f.psName)) || null;
+            } catch (e) { sp._voltFontPs = null; }
+          }
+          i = Math.max(i, start + 1);
+        }
+      } catch (e) { /* font annotation is best-effort — editing just falls back */ }
+    },
+
+    /** Match a PDF PostScript font name to a standard family + style. The
+        exported PDF can only embed the 14 standard fonts (pdf-lib without
+        fontkit), so unknown fonts resolve to their closest sans/serif/mono
+        family with bold/italic preserved. */
+    _matchFontPs(ps) {
+      const n = String(ps || "").toLowerCase();
+      const family = /courier/.test(n) ? "courier"
+        : /times|tinos|liberation\s*serif|nimbus\s*rom|freeserif|tmsrmn/.test(n) ? "times"
+          : "helvetica";
+      const bold = /bold|heavy|black|demibold|semibold/.test(n) && !/not\s*bold|nonbold/.test(n);
+      const italic = /italic|oblique/.test(n);
+      return { family, bold, italic };
+    },
+
+    _cssFont(f) {
+      if (f.family === "times") return "\"Times New Roman\", Times, serif";
+      if (f.family === "courier") return "\"Courier New\", Courier, monospace";
+      return "Helvetica, Arial, sans-serif";
+    },
+
+    _familyName(f) {
+      return f.family === "times" ? "Times" : f.family === "courier" ? "Courier" : "Helvetica";
+    },
+
+    /** pdf-lib StandardFonts entry for an edit's formatting. */
+    async _standardFontFor(ann, pdf) {
+      const f = ann.font || { family: "helvetica", bold: false, italic: false };
+      const { StandardFonts } = global.PDFLib;
+      const fam = f.family === "times"
+        ? [StandardFonts.TimesRoman, StandardFonts.TimesRomanItalic, StandardFonts.TimesRomanBold, StandardFonts.TimesRomanBoldItalic]
+        : f.family === "courier"
+          ? [StandardFonts.Courier, StandardFonts.CourierOblique, StandardFonts.CourierBold, StandardFonts.CourierBoldOblique]
+          : [StandardFonts.Helvetica, StandardFonts.HelveticaOblique, StandardFonts.HelveticaBold, StandardFonts.HelveticaBoldOblique];
+      const idx = (f.bold ? 2 : 0) + (f.italic ? 1 : 0);
+      return pdf.embedFont(fam[idx]);
+    },
+
+    /** Re-apply every stored text edit to a freshly built layer (called from
+        app.js after each text-layer render): find each edit's span — by
+        index first (pdf.js order is deterministic), text as a fallback — then
+        paint the cover + new text. Never throws. */
+    applyTextEditsToLayer(layer, pageNum) {
+      const edits = this.list.filter((a) => a.type === "text" && a.page === pageNum);
+      if (!edits.length) return;
+      const wrap = layer.closest(".page-wrap");
+      const spans = [...layer.querySelectorAll("span")];
+      for (const ann of edits) {
+        try {
+          const sp = (ann.spanIndex != null && spans[ann.spanIndex]) || this._findSpanByText(spans, ann.original);
+          if (!sp) continue;
+          this._paintTextEdit(ann, layer, wrap, sp);
+        } catch (e) { /* a bad edit must never break the layer */ }
+      }
+    },
+
+    _findSpanByText(spans, original) {
+      const t = String(original || "").trim();
+      if (!t) return null;
+      return spans.find((s) => s.textContent.trim() === t) || null;
+    },
+
+    /** Measure replacement text in PDF points with the edit's font (canvas
+        measureText; 1pt = 4/3px, so the pt width is px * 0.75). Falls back to
+        a length-based estimate when no canvas exists (headless tests). */
+    _wrapTextSegments(text, font, size, budgetPt) {
+      const f = font || { family: "helvetica", bold: false, italic: false };
+      const family = this._cssFont(f);
+      const css = (f.italic ? "italic " : "") + (f.bold ? "700 " : "400 ") + (size * 4 / 3) + "px " + family;
+      let ctx = this._wrapCtx;
+      if (!ctx) {
+        try {
+          ctx = document.createElement("canvas").getContext("2d");
+          this._wrapCtx = ctx;
+        } catch (e) { ctx = null; }
+      }
+      const widthOf = ctx
+        ? (t) => { ctx.font = css; return ctx.measureText(t).width * 0.75; }
+        : (t) => String(t).length * (size || 11) * 0.5;
+      return global.Utils.wrapText(text, widthOf, Math.max(8, Number(budgetPt) || 240));
+    },
+
+    /** Compute the wrapped layout of a text edit: when the replacement is
+        longer than the original line, split it into lines that each fit the
+        anchor line's width, and place each continuation line at the geometry
+        of the FOLLOWING span in the layer (its x-indent, baseline and height
+        — so the wrap flows like the document's own text; an indented or
+        right-aligned paragraph keeps its look). If a line index runs past
+        the last span (end of page), the fallback drops a full line-height
+        below the previous line at the anchor's x. Returns the full wrap
+        array [{x, y, w, h, text}] — wrap[0] is the anchor line — or null
+        when the replacement fits on one line. Pure-ish: geometry comes from
+        the DOM, so it's computed at commit time and stored on the annotation
+        (deterministic re-render, backup-safe). */
+    _computeTextEditWrap(ann, layer, wrapEl, span) {
+      try {
+        const rect = ann.origRect || this._spanBboxPdf(span, wrapEl);
+        if (!rect || !(rect.w > 0)) return null;
+        const segs = this._wrapTextSegments(String(ann.text || ""), ann.font, ann.size, rect.w);
+        if (segs.length <= 1) return null;
+        const spans = [...layer.querySelectorAll("span")];
+        const idx = ann.spanIndex != null ? ann.spanIndex : spans.indexOf(span);
+        const wrap = [{ x: rect.x, y: rect.y, w: rect.w, h: rect.h, text: segs[0] }];
+        let prev = rect;
+        for (let k = 1; k < segs.length; k++) {
+          const follow = spans[idx + k];
+          let g = null;
+          if (follow) {
+            g = this._spanBboxPdf(follow, wrapEl);
+            if (!g || !(g.w > 0)) g = null;
+          }
+          if (!g) {
+            const gap = Math.max(prev.h * 0.18, 1.5);
+            g = { x: rect.x, y: prev.y - prev.h - gap, w: rect.w, h: prev.h };
+          }
+          wrap.push({ x: g.x, y: g.y, w: g.w, h: g.h, text: segs[k] });
+          prev = g;
+        }
+        return wrap;
+      } catch (e) {
+        return null;
+      }
+    },
+
+    /** Paint ONE edit onto the layer: restyle the span to the edit's
+        formatting and put a paper-colored cover behind it that erases the
+        original canvas glyphs. Shared by the live preview and post-render
+        re-application, so the preview looks exactly like the final edit. */
+    _paintTextEdit(ann, layer, wrap, span) {
+      const f = ann.font || { family: "helvetica", bold: false, italic: false };
+      // the edit's wrapped layout: stored on the annotation (committed edits)
+      // or computed live for the preview; wrap[0] is the anchor line
+      const wrapLines = (ann.wrap && ann.wrap.length) ? ann.wrap : this._computeTextEditWrap(ann, layer, wrap, span);
+      const anchorText = wrapLines ? wrapLines[0].text : String(ann.text || "");
+      // stale per-line covers from a previously longer wrap go first (a live
+      // preview shrink would otherwise leave white bars behind)
+      layer.querySelectorAll('.volt-text-cover[data-id^="' + ann.id + ':"]').forEach((c) => c.remove());
+      // style the span FIRST so offsetWidth reflects the new text
+      span.textContent = anchorText;
+      span.style.fontFamily = this._cssFont(f);
+      span.style.fontSize = "calc(var(--scale-factor)*" + (ann.size || 11) + "px)";
+      span.style.fontWeight = f.bold ? "700" : "400";
+      span.style.fontStyle = f.italic ? "italic" : "normal";
+      span.style.color = ann.color || "#111827";
+      span.style.transform = "none";
+      span.style.whiteSpace = "nowrap";
+      let cover = layer.querySelector('.volt-text-cover[data-id="' + ann.id + '"]');
+      if (!cover) {
+        cover = document.createElement("div");
+        cover.className = "volt-text-cover";
+        cover.dataset.id = ann.id;
+        layer.insertBefore(cover, layer.firstChild);
+      }
+      const r = ann.origRect || ann.rect;
+      if (r) {
+        const a = this._pdfToLocal(wrap, r.x, r.y);
+        const b = this._pdfToLocal(wrap, r.x + r.w, r.y + r.h);
+        const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+        const origW = Math.abs(b.x - a.x);
+        const newW = span.offsetWidth > 0 ? span.offsetWidth : origW;
+        cover.style.left = (x - 2) + "px";
+        cover.style.top = (y - 2) + "px";
+        cover.style.width = Math.max(origW, newW) + 4 + "px";
+        cover.style.height = (Math.abs(b.y - a.y) + 4) + "px";
+      }
+      // multi-span edits (the AI edit_text tool): the phrase crossed span
+      // boundaries, so the sibling covered spans must not render their
+      // original glyphs on top of the anchor's replacement — blank them (the
+      // anchor's cover already erases the canvas underneath; this just stops
+      // the DOM text re-drawing). Spans are rebuilt deterministically per
+      // page, so the indexes stay valid and undo/rebuild restores them.
+      if (ann.blankSpanIndexes && ann.blankSpanIndexes.length) {
+        const all = [...layer.querySelectorAll("span")];
+        for (const bi of ann.blankSpanIndexes) {
+          const b = all[bi];
+          if (b && b !== span) {
+            b.textContent = "";
+            b.style.color = "transparent";
+          }
+        }
+      }
+      // wrapped continuation lines: rewrite the following spans as the
+      // replacement's overflow, each positioned at its own original geometry
+      // (the "matching geometry" of the lines the text flows onto), with a
+      // full-width cover erasing that line's original canvas glyphs
+      if (wrapLines && wrapLines.length > 1) {
+        const all = [...layer.querySelectorAll("span")];
+        const idx = ann.spanIndex != null ? ann.spanIndex : all.indexOf(span);
+        for (let k = 1; k < wrapLines.length; k++) {
+          const seg = wrapLines[k];
+          // a synthetic line from a previous paint of THIS edit, then an
+          // original following span (the matching-geometry line), then a
+          // freshly synthesized span when the page runs out of lines. Other
+          // edits' synthetic spans are never stolen (they'd fight over
+          // position), and each paint re-uses our own by its dataset key.
+          let s = layer.querySelector('span[data-volt-wrap="' + ann.id + ":" + k + '"]');
+          if (!s || !s.isConnected) {
+            const cand = all[idx + k];
+            if (cand && cand.isConnected && !(cand.dataset && cand.dataset.voltWrap)) {
+              s = cand;
+            } else {
+              s = document.createElement("span");
+              s.className = "volt-wrap-line";
+              s.dataset.voltWrap = ann.id + ":" + k;
+              layer.appendChild(s);
+            }
+          }
+          s.textContent = seg.text;
+          s.style.fontFamily = this._cssFont(f);
+          s.style.fontSize = "calc(var(--scale-factor)*" + (ann.size || 11) + "px)";
+          s.style.fontWeight = f.bold ? "700" : "400";
+          s.style.fontStyle = f.italic ? "italic" : "normal";
+          s.style.color = ann.color || "#111827";
+          s.style.transform = "none";
+          s.style.whiteSpace = "nowrap";
+          const pt = this._pdfToLocal(wrap, seg.x, seg.y);
+          s.style.left = pt.x + "px";
+          s.style.top = pt.y + "px";
+          const a = pt;
+          const b = this._pdfToLocal(wrap, seg.x + seg.w, seg.y + seg.h);
+          const c = document.createElement("div");
+          c.className = "volt-text-cover";
+          c.dataset.id = ann.id + ":" + k;
+          c.style.left = (Math.min(a.x, b.x) - 2) + "px";
+          c.style.top = (Math.min(a.y, b.y) - 2) + "px";
+          c.style.width = (Math.abs(b.x - a.x) + 4) + "px";
+          c.style.height = (Math.abs(b.y - a.y) + 4) + "px";
+          layer.insertBefore(c, layer.firstChild);
+        }
+      }
+    },
+
+    /** Read the actual rendered color of a span's text by sampling the page's
+        rendered canvas inside the span's box. pdf.js's getTextContent items
+        carry no color in this build, so the canvas is the ground truth (it
+        reflects the PDF's real fill color, theme handling, etc.).
+        Best-effort — never throws, returns a hex string or null when no
+        text pixels could be distinguished from the background. */
+    _spanRenderedColor(span, wrap) {
+      try {
+        const canvas = wrap.querySelector("canvas.page-canvas");
+        if (!canvas) return null;
+        const ctx = canvas.getContext("2d");
+        const wrect = wrap.getBoundingClientRect();
+        const r = span.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const x = Math.floor((r.left - wrect.left) * dpr);
+        const y = Math.floor((r.top - wrect.top) * dpr);
+        const w = Math.max(1, Math.ceil(r.width * dpr));
+        const h = Math.max(1, Math.ceil(r.height * dpr));
+        const img = ctx.getImageData(x, y, w, h);
+        const data = img.data;
+        // background = the most frequent quantized color in the box (robust
+        // even when the box's corner lands on a glyph)
+        const hist = new Map();
+        for (let i = 0; i < data.length; i += 4) {
+          const key = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3);
+          hist.set(key, (hist.get(key) || 0) + 1);
+        }
+        let bgKey = 0, bgN = -1;
+        for (const [k, v] of hist) if (v > bgN) { bgN = v; bgKey = k; }
+        const bg = [(bgKey >> 10 & 31) << 3 | 4, (bgKey >> 5 & 31) << 3 | 4, (bgKey & 31) << 3 | 4];
+        // ink = pixels far enough from the background; averaging only the
+        // core ink pixels (anti-aliased edges are near-bg and excluded) gives
+        // the true text color — dark text on light pages AND light text on
+        // dark pages both work
+        let rs = 0, gs = 0, bs = 0, n = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const dR = data[i] - bg[0], dG = data[i + 1] - bg[1], dB = data[i + 2] - bg[2];
+          if (dR * dR + dG * dG + dB * dB > 2500) {
+            rs += data[i]; gs += data[i + 1]; bs += data[i + 2]; n++;
+          }
+        }
+        if (!n) return null;
+        return "#" + [rs / n, gs / n, bs / n].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+      } catch (e) {
+        return null;
+      }
+    },
+
+    /** PDF-space bbox of a text-layer span, from its rendered box corners
+        (y-up PDF coords, so surviving page rotation). */
+    _spanBboxPdf(span, wrap) {
+      const wrect = wrap.getBoundingClientRect();
+      const r = span.getBoundingClientRect();
+      const p1 = this._localToPdf(wrap, r.left - wrect.left, r.top - wrect.top);
+      const p2 = this._localToPdf(wrap, r.left - wrect.left + r.width, r.top - wrect.top + r.height);
+      return { x: Math.min(p1[0], p2[0]), y: Math.min(p1[1], p2[1]), w: Math.abs(p2[0] - p1[0]), h: Math.abs(p2[1] - p1[1]) };
+    },
+
+    /** Open the in-place text editor for a clicked span. */
+    _openTextEditor(span, wrap) {
+      const app = this._app();
+      const el = app.elements;
+      if (!el.textEditPop) return;
+      const layer = span.closest(".page-text-layer");
+      const pageNum = Number(wrap.dataset.page);
+      const spans = [...layer.querySelectorAll("span")];
+      const spanIndex = spans.indexOf(span);
+      if (spanIndex < 0) return;
+      // editing an already-edited line? pre-fill from its annotation
+      const existing = this.list.find((a) => a.type === "text" && a.page === pageNum && a.spanIndex === spanIndex);
+      const ps = (existing && existing.origFontPs) || span._voltFontPs || "Helvetica";
+      const matched = existing ? (existing.font || this._matchFontPs(existing.origFontPs)) : this._matchFontPs(ps);
+      const size = existing ? existing.size : (span._voltSize || 11.5);
+      // default the picker to the line's ACTUAL rendered color (sampled from
+      // the page canvas), so "keep the original look" is the zero-edit path;
+      // cache it on the span so repeated opens don't re-sample
+      let origColor = span._voltColor;
+      if (!origColor && !existing) origColor = this._spanRenderedColor(span, wrap);
+      if (origColor) span._voltColor = origColor;
+      const color = existing ? existing.color : (origColor || "#111827");
+      this._textEditing = {
+        span, wrap, layer, pageNum, spanIndex, existing,
+        originalText: span.textContent,
+        matched,
+        font: existing ? { ...(existing.font || matched) } : { ...matched },
+        size, color,
+      };
+      el.textEditInput.value = existing ? existing.text : span.textContent;
+      el.textEditFont.value = "match";
+      this._setTextEditToggle(el.textEditBold, this._textEditing.font.bold);
+      this._setTextEditToggle(el.textEditItalic, this._textEditing.font.italic);
+      el.textEditSize.value = Math.round(size * 100) / 100;
+      el.textEditColor.value = color;
+      el.textEditPop.querySelectorAll(".area-swatch").forEach((sw) => {
+        sw.classList.toggle("active", String(sw.dataset.color).toLowerCase() === String(color).toLowerCase());
+      });
+      el.textEditHint.textContent = "Original: " + this._familyName(matched) + (matched.bold ? " Bold" : "") + (matched.italic ? " Italic" : "") + " · " + (Math.round(size * 10) / 10) + "pt" + (origColor ? " · " + origColor : "");
+      const r = span.getBoundingClientRect();
+      const pw = el.textEditPop.offsetWidth || 300, ph = el.textEditPop.offsetHeight || 240;
+      let left = Math.max(8, Math.min(r.left, window.innerWidth - pw - 8));
+      let top = r.bottom + 8;
+      if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 8);
+      el.textEditPop.style.left = left + "px";
+      el.textEditPop.style.top = top + "px";
+      el.textEditPop.hidden = false;
+      el.textEditInput.focus();
+      el.textEditInput.select();
+    },
+
+    _setTextEditToggle(btn, on) {
+      if (!btn) return;
+      btn.classList.toggle("active", !!on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    },
+
+    /** Live-preview the popover's current values on the span (no commit). */
+    _previewTextEdit() {
+      const ed = this._textEditing;
+      if (!ed) return;
+      const el = this._app().elements;
+      const fam = el.textEditFont.value;
+      const font = fam === "match" ? { ...ed.matched }
+        : { family: fam, bold: el.textEditBold.classList.contains("active"), italic: el.textEditItalic.classList.contains("active") };
+      const size = Math.max(4, Math.min(200, parseFloat(el.textEditSize.value) || ed.size));
+      const color = el.textEditColor.value || "#111827";
+      this._paintTextEdit({
+        id: (ed.existing && ed.existing.id) || "preview",
+        page: ed.pageNum, spanIndex: ed.spanIndex,
+        text: el.textEditInput.value.replace(/\s*\n+\s*/g, " ").trim(),
+        original: ed.originalText,
+        origRect: (ed.existing && ed.existing.origRect) || this._spanBboxPdf(ed.span, ed.wrap),
+        font, size, color,
+      }, ed.layer, ed.wrap, ed.span);
+    },
+
+    /** Commit the popover's values as a text-edit annotation. */
+    _applyTextEdit() {
+      const ed = this._textEditing;
+      if (!ed) return;
+      const el = this._app().elements;
+      const text = el.textEditInput.value.replace(/\s*\n+\s*/g, " ").trim() || ed.originalText;
+      const fam = el.textEditFont.value;
+      const font = fam === "match" ? { ...ed.matched }
+        : { family: fam, bold: el.textEditBold.classList.contains("active"), italic: el.textEditItalic.classList.contains("active") };
+      const size = Math.max(4, Math.min(200, parseFloat(el.textEditSize.value) || ed.size));
+      const color = el.textEditColor.value || "#111827";
+      const origRect = (ed.existing && ed.existing.origRect) || this._spanBboxPdf(ed.span, ed.wrap);
+      const base = {
+        type: "text", page: ed.pageNum, spanIndex: ed.spanIndex,
+        original: ed.originalText, origRect,
+        text, font, size, color,
+        origFontPs: ed.span._voltFontPs || (ed.existing && ed.existing.origFontPs) || "Helvetica",
+      };
+      // longer-than-the-line replacements wrap across the following lines;
+      // the layout is frozen here (deterministic re-render + backup) and the
+      // live preview already showed it via the on-the-fly computation
+      const wrap = this._computeTextEditWrap(base, ed.layer, ed.wrap, ed.span);
+      if (wrap && wrap.length > 1) base.wrap = wrap;
+      this._mutate(() => {
+        if (ed.existing) {
+          const keep = ed.existing.id;
+          Object.assign(ed.existing, base, { id: keep, createdAt: ed.existing.createdAt });
+        } else {
+          this.list.push({ id: Utils.uid(), ...base, createdAt: Date.now() });
+        }
+      });
+      this._closeTextEditor(true);
+      this.setMode("select");
+      this._app().toast("Text edited — it exports into the saved PDF", "ok");
+    },
+
+    /** Close the editor. commit=true keeps the applied edit; otherwise the
+        span is restored (a new edit reverts to the original line; a tweak of
+        an existing edit re-paints the stored version). */
+    _closeTextEditor(commit) {
+      const ed = this._textEditing;
+      this._textEditing = null;
+      const el = this._app().elements;
+      if (el.textEditPop) el.textEditPop.hidden = true;
+      if (!ed || commit || !ed.span || !ed.span.isConnected) return;
+      if (ed.existing) {
+        try {
+          this._paintTextEdit(ed.existing, ed.layer, ed.wrap, ed.span);
+        } catch (e) { /* ignore */ }
+      } else {
+        ed.span.textContent = ed.originalText;
+        ed.span.style.fontFamily = "";
+        ed.span.style.fontSize = "";
+        ed.span.style.fontWeight = "";
+        ed.span.style.fontStyle = "";
+        ed.span.style.color = "";
+        ed.span.style.transform = "";
+        ed.span.style.whiteSpace = "";
+      }
+      const pc = ed.layer.querySelector('.volt-text-cover[data-id="preview"]');
+      if (pc) pc.remove();
+      // the preview may have rewritten FOLLOWING spans (wrapped lines) or
+      // synthesized new ones — rebuild the layer from the embedded text so
+      // every span returns to the original and only stored edits re-apply
+      // (a stored edit's own wrap lines are re-painted by the rebuild)
+      const app = this._app();
+      if (app && app.rebuildTextLayers) app.rebuildTextLayers().catch(() => {});
+    },
+
+    _wireTextEditor() {
+      const app = this._app();
+      const el = app.elements;
+      if (!el.textEditPop) return;
+      const refresh = () => this._previewTextEdit();
+      el.textEditInput.addEventListener("input", refresh);
+      el.textEditFont.addEventListener("change", refresh);
+      el.textEditSize.addEventListener("input", refresh);
+      el.textEditColor.addEventListener("input", refresh);
+      el.textEditPop.querySelectorAll(".area-swatch").forEach((sw) => {
+        sw.addEventListener("click", () => {
+          el.textEditColor.value = sw.dataset.color;
+          el.textEditPop.querySelectorAll(".area-swatch").forEach((s) => s.classList.toggle("active", s === sw));
+          refresh();
+        });
+      });
+      const toggle = (btn) => {
+        btn.addEventListener("click", () => {
+          this._setTextEditToggle(btn, !btn.classList.contains("active"));
+          refresh();
+        });
+      };
+      toggle(el.textEditBold);
+      toggle(el.textEditItalic);
+      el.textEditCancel.addEventListener("click", () => this._closeTextEditor(false));
+      el.textEditApply.addEventListener("click", () => this._applyTextEdit());
+      el.textEditInput.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { e.preventDefault(); this._closeTextEditor(false); }
+        else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this._applyTextEdit(); }
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && this._textEditing) this._closeTextEditor(false);
+      });
+      // clicking anywhere outside the popover reverts the preview and closes
+      document.addEventListener("mousedown", (e) => {
+        if (!this._textEditing) return;
+        if (el.textEditPop && !el.textEditPop.contains(e.target)) {
+          // the click that JUST opened the editor (a text span in Text mode)
+          // must not immediately close it — the page-level handler owns those
+          // clicks; a later click on another line re-opens it, blank page
+          // space closes it, and clicks on chrome (toolbar, panels) close it
+          if (this.mode === "text" && e.target.closest && e.target.closest(".page-text-layer span")) return;
+          this._closeTextEditor(false);
+        }
+      });
+    },
+
     /* ── annotation editing (select → move / resize / delete) ──────────
        Area highlights are free-form shapes, so they get a real editing box
        in select mode: click to select (drag to move, drag the handles to
@@ -1249,6 +1821,7 @@
     onAreaMouseDown(e, wrap) {
       if (this.mode !== "select" || e.button !== 0) return;
       if (e.target.closest && e.target.closest(".note-pin")) return; // pins own their clicks
+      if (e.target.closest && e.target.closest(".area-swatch")) return; // the box's recolor row owns its clicks
       const handle = e.target.closest ? e.target.closest(".area-handle") : null;
       const rotHandle = e.target.closest ? e.target.closest(".area-rot") : null;
       const del = e.target.closest ? e.target.closest(".area-del") : null;
@@ -1345,6 +1918,28 @@
       del.setAttribute("aria-label", "Delete highlight");
       del.innerHTML = '<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>';
       el.appendChild(del);
+      // one-click recolor: the palette for this annotation's type sits right
+      // in the box (same swatches the right-click menu offers), so changing a
+      // highlight / underline / strike's color needs no menu hunt
+      const pal = (PALETTE[ann.type] && PALETTE[ann.type].length ? PALETTE[ann.type] : PALETTE.highlight);
+      const colors = document.createElement("div");
+      colors.className = "area-colors";
+      pal.forEach((c) => {
+        const sw = document.createElement("button");
+        sw.type = "button";
+        sw.className = "area-swatch" + (String(c).toLowerCase() === String(ann.color || "").toLowerCase() ? " active" : "");
+        sw.dataset.color = c;
+        sw.style.background = c;
+        sw.title = "Recolor " + (TYPES[ann.type]?.label || "highlight");
+        sw.setAttribute("aria-label", "Recolor to " + c);
+        sw.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this._setAreaColor(c); // keeps the selection; re-renders the overlay
+          colors.querySelectorAll(".area-swatch").forEach((s) => s.classList.toggle("active", s === sw));
+        });
+        colors.appendChild(sw);
+      });
+      el.appendChild(colors);
       if (ann.rect) {
         for (const h of ["nw", "n", "ne", "e", "se", "s", "sw", "w"]) {
           const hd = document.createElement("div");
@@ -2271,6 +2866,38 @@
           color: rgb(0.15, 0.2, 0.32),
           opacity: 0.95,
         });
+      } else if (ann.type === "text" && (ann.origRect || (ann.wrap && ann.wrap.length))) {
+        // text edit: cover the original glyphs with the page background, then
+        // draw the replacement with the matched/selected standard font — the
+        // same cover + new text the on-screen layer shows. Wrapped edits
+        // (replacement longer than the line) draw one cover + text per line.
+        const pad = 1.5;
+        const size = Math.max(4, Math.min(200, Number(ann.size) || 11));
+        const f = await this._standardFontFor(ann, pdf);
+        const col = this._hexToRgb(ann.color || "#111827");
+        const wrapLines = (ann.wrap && ann.wrap.length) ? ann.wrap : null;
+        if (wrapLines) {
+          for (const ln of wrapLines) {
+            page.drawRectangle({ x: ln.x - pad, y: ln.y - pad, width: ln.w + pad * 2, height: ln.h + pad * 2, color: rgb(1, 1, 1) });
+            page.drawText(String(ln.text || ""), {
+              x: ln.x,
+              y: ln.y + (ln.h - size) / 2 + size * 0.72,
+              size,
+              font: f,
+              color: rgb(col.r, col.g, col.b),
+            });
+          }
+        } else {
+          const r = ann.origRect;
+          page.drawRectangle({ x: r.x - pad, y: r.y - pad, width: r.w + pad * 2, height: r.h + pad * 2, color: rgb(1, 1, 1) });
+          page.drawText(String(ann.text || "").replace(/\s*\n+\s*/g, " ").trim() || String(ann.original || ""), {
+            x: r.x,
+            y: r.y + (r.h - size) / 2 + size * 0.72,
+            size,
+            font: f,
+            color: rgb(col.r, col.g, col.b),
+          });
+        }
       } else if (ann.type === "form" && ann.rect) {
         await this._burnFormField(pdf, page, ann, helv);
       }

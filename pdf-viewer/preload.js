@@ -19,6 +19,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("voltDesktop", {
   readFile: (path) => ipcRenderer.invoke("volt:read-file", path),
   writeFile: (path, buffer) => ipcRenderer.invoke("volt:write-file", path, buffer),
+  openWith: (name, buffer) => ipcRenderer.invoke("volt:open-with", name, buffer),
   pickPdf: () => ipcRenderer.invoke("volt:pick-pdf"),
   runSetupTasks: () => ipcRenderer.invoke("volt:setup-tasks"),
   onOpenPath: (callback) => ipcRenderer.on("volt:open-path", (_event, path) => callback(path)),
@@ -34,5 +35,11 @@ contextBridge.exposeInMainWorld("voltDesktop", {
   stopPrivateOllama: () => ipcRenderer.invoke("volt:stop-private-ollama"),
   restart: () => ipcRenderer.invoke("volt:restart"),
   quit: () => ipcRenderer.invoke("volt:quit"),
+  checkForUpdates: () => ipcRenderer.invoke("volt:check-for-updates"),
+  appInfo: () => ipcRenderer.invoke("volt:app-info"),
+  updatePrefs: (prefs) => ipcRenderer.invoke("volt:update-prefs", prefs),
+  downloadUpdate: () => ipcRenderer.invoke("volt:download-update"),
+  onUpdateDownloaded: (callback) => ipcRenderer.on("volt:update-downloaded", (_event, data) => callback(data)),
+  onUpdateAvailable: (callback) => ipcRenderer.on("volt:update-available", (_event, data) => callback(data)),
   ready: () => ipcRenderer.send("volt:renderer-ready"),
 });

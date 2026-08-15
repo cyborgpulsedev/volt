@@ -15,7 +15,7 @@
 //   ═══════════════════════════════════════════════════════════════ */
 "use strict";
 
-const CACHE = "volt-447970249116";
+const CACHE = "volt-7bdb7636570f";
 const VERSION = "1.0.0";
 const ASSETS = [
   "./",
@@ -28,6 +28,7 @@ const ASSETS = [
   "./js/ocr.js",
   "./js/sample-data.js",
   "./js/voice.js",
+  "./js/office-export.js",
   "./vendor/pdf.min.mjs",
   "./vendor/pdf.worker.min.mjs",
   "./vendor/pdf-lib.min.js",

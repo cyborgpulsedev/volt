@@ -54,6 +54,7 @@ const ASSETS = [
   "./js/ocr.js",
   "./js/sample-data.js",
   "./js/voice.js",
+  "./js/office-export.js",
   "./vendor/pdf.min.mjs",
   "./vendor/pdf.worker.min.mjs",
   "./vendor/pdf-lib.min.js",

@@ -578,8 +578,46 @@ Pick the preset, paste your API key (stored only in your browser's
 - **Exporting** — an **annotated PDF** (highlights/underlines/strikes/notes
   burned in via pdf-lib), a **Markdown** notes file, a **Chat transcript**
   (Markdown — question/answer pairs with page citations, for sharing the
-  conversation outside Volt), or a portable **JSON backup** (export +
-  re-import anywhere). The backup dialog shows three
+  conversation outside Volt), a portable **JSON backup** (export +
+  re-import anywhere), or **Word / Excel / LibreOffice documents**: the
+  export dialog also offers **.docx** (a real OOXML Word document — title,
+  paragraphs, tables and images, each table rendered as a Word table),
+  **.xlsx** (a real spreadsheet — every detected table becomes its own
+  sheet with aligned columns, for pasting straight into Excel, Google
+  Sheets or LibreOffice Calc), **.pptx** (a real presentation — a title
+  slide, one slide per page's text, then each detected table and each
+  picture as its own slide, for PowerPoint, Google Slides or LibreOffice
+  Impress), and **.tsv** (plain tab-separated tables for any other tool).
+  **Intelligent detection** reads each page's
+  content streams to find tables and images. Tables come from two
+  sources: the **text-gap detector** clusters lines by baseline and
+  splits them into columns on real geometric gaps, and a **vector-grid
+  detector** reads the page's path operators (every stroked
+  rectangle/line, tracked through the current transform matrix) to
+  recover grids that have *no text at all* — blank forms, ruled
+  templates — plus merged cells: a wide header cell spanning columns
+  flattens to its first column with empty neighbors, so "Combined"
+  lands once instead of triplicating. The two detectors cooperate:
+  table lines are excluded from the prose (nothing is doubled), and
+  separate drawn grids are kept separate — a blank grid above a merged
+  table at the same column positions stays two tables, because
+  same-position line segments only merge when their spans actually
+  touch. Images are embedded XObjects and inline images, re-encoded
+  from the rendered page for clean embedding, and the title comes from
+  the largest heading-styled line.  All four formats are built in-app with a small
+  hand-rolled ZIP writer — no server, no cloud, nothing leaves the
+  machine. The office exports are **selection-aware**: select pages in
+  the Pages manager (its Escape-close keeps the selection live) and the
+  Word/Excel/PowerPoint/TSV exports cover exactly those pages — the
+  export dialog shows the note "Office exports will cover pages 2–3" —
+  while an unchanged selection (or none) exports the whole document as
+  before. Staged insertions (blank / from-another-PDF pages) can't be
+  read from the open file and are reported as skipped in the toast.
+  The Word/Excel/PowerPoint success toasts also carry an **Open with…**
+  action (desktop app): one click writes the freshly built file to the
+  temp folder and opens it in your default Word/Excel/PowerPoint
+  handler — the same as double-clicking it in Explorer. (In the PWA the
+  action is omitted; there is no shell to hand files to.) The backup dialog shows three
   checkboxes — **Annotations** (always included), **AI overrides** (model,
   max context, system prompt) and **Chat history** — so a backup can be
   marks-only, the full setup, or anything between, and a restore applies
@@ -648,12 +686,22 @@ Pick the preset, paste your API key (stored only in your browser's
 - **AI tools (agent harness)** — the chat can *act* on the document, not just
   answer: the model receives a tool set (document info, search text, read a
   page, add a highlight, add a note, list/remove annotations, navigate to a
-  page) and Volt executes each call, feeds the result back, and continues the
-  conversation — so you can say *"highlight every mention of the contract
-  date"* or *"add a note on page 3 saying TBD"* and the AI does it. Tool
-  calls appear as a small chip in the message, and every executed change is a
-  normal annotation (undoable, exportable) — exactly what a user could do by
-  hand.
+  page, **edit text**) and Volt executes each call, feeds the result back, and
+  continues the conversation — so you can say *"highlight every mention of
+  the contract date"*, *"add a note on page 3 saying TBD"*, or *"change
+  'quiet engine' to 'quiet motor' on page 1"* and the AI does it. The text
+  edit goes through the exact same path as the **Markup ▸ Text** tool — it
+  matches the phrase on the page (line-aware, so phrases split across word
+  spans still work), preserves the rest of the line, and can restyle the
+  changed text (font family, bold/italic, size, color). Tool calls appear as
+  a small chip in the message, and every executed change is a normal
+  annotation (undoable with Ctrl+Z, exportable into the saved PDF) — exactly
+  what a user could do by hand. When a replacement is **longer than the
+  line it lands on**, it wraps across the following lines instead of
+  overflowing the page: the layout uses the following lines' own geometry
+  (their indent, baseline and height), so an indented or right-aligned
+  paragraph keeps its look, and each wrapped line is covered and re-drawn in
+  the exported PDF the same way the on-screen layer shows it.
 - **Per-document AI settings** — in ⚙, check *Customize AI for this document*
   to give a specific PDF its own model, max-context size, and even its own
   system prompt (e.g. *"answer in legal plain English"* for contracts, *"teach
@@ -811,29 +859,37 @@ are ignored until it closes — focus always returns to where you were.
 ## Files
 
 ```
-index.html        app shell
-css/style.css     styling
-js/utils.js       pure helpers + tiny markdown renderer + RAG chunking (unit-tested)
-js/annotations.js annotation engine + pdf-lib export
-js/ai.js          LLM client, grounding, chat UI, settings
-js/app.js         viewer core (pdf.js rendering, scroll, zoom, search, keyboard)
-js/sample-data.js embedded sample document (base64)
-manifest.json     PWA manifest (installable app)
-sw.js             service worker (offline caching for the PWA)
-main.js           Electron main process (embedded server + app window, file watcher, smoke test)
-preload.js        Electron bridge — OS file handoff (drag/drop + association) + file-watch API
-package.json      Electron runtime + scripts (start / smoke / unit tests)
-vendor/           vendored pdf.js 4.8 (ESM) + pdf-lib 1.17 — no CDN needed
-scripts/          update-vendor.mjs, auto-update.cjs, vendor-recovery.cjs, gen-sw.mjs (sw.js generator),
-                  vendor-weekly.cmd + schedule-vendor-weekly.ps1 (weekly Scheduled Task), register-volt-file-assoc.ps1,
-                  file-watcher.cjs + test-file-watcher.mjs (disk-change watcher + its unit tests),
-                  make-sample.mjs, serve.mjs, mock-llm.mjs, test-utils.mjs
-logs/             vendor-update.log (weekly scheduled run transcript, created on first run)
-start-volt-app.cmd  desktop-app launcher (Electron)
-start-volt-app-hidden.vbs  hidden-console wrapper the desktop shortcut targets
-                  (scripts/ — wscript launches the .cmd with window style 0,
-                  so no command-prompt box appears)
-start-volt.cmd      web launcher (starts server + opens browser)
+Volt (repo root)
+├── start-volt-app.cmd       desktop-app launcher (Electron)
+├── start-volt.cmd           web launcher (starts server + opens browser)
+├── scripts/                 launcher + dev support (repo root):
+│     check-launchers.cjs (cmd.exe parse gate), create-volt-shortcut.ps1,
+│     register-volt-file-assoc.ps1, show-error.ps1,
+│     start-volt-app-hidden.vbs (hidden-console wrapper the desktop shortcut
+│     targets — wscript launches the .cmd with window style 0, so no
+│     command-prompt box appears), create-volt-pwa-icons.ps1,
+│     make-sample.mjs, mock-llm.mjs, test-second-instance.js
+└── pdf-viewer/               the app — run everything from here
+      index.html        app shell
+      css/style.css     styling
+      js/utils.js       pure helpers + tiny markdown renderer + RAG chunking (unit-tested)
+      js/annotations.js annotation engine + pdf-lib export
+      js/ai.js          LLM client, grounding, chat UI, settings
+      js/app.js         viewer core (pdf.js rendering, scroll, zoom, search, keyboard)
+      js/sample-data.js embedded sample document (base64)
+      manifest.json     PWA manifest (installable app)
+      sw.js             service worker (offline caching for the PWA)
+      main.js           Electron main process (embedded server + app window, file watcher, smoke test)
+      preload.js        Electron bridge — OS file handoff (drag/drop + association) + file-watch API
+      serve.mjs         dev server for the PWA / browser path (http://localhost:8421)
+      package.json      Electron runtime + scripts (start / smoke / unit tests)
+      vendor/           vendored pdf.js 4.8 (ESM) + pdf-lib 1.17 — no CDN needed
+      scripts/          app-internal: update-vendor.mjs, auto-update.cjs, vendor-recovery.cjs,
+                        gen-sw.mjs (sw.js generator), vendor-weekly.cmd + schedule-vendor-weekly.ps1
+                        (weekly Scheduled Task), file-watcher.cjs + test-file-watcher.mjs,
+                        test-utils.mjs, test-artifact-regression.mjs, window-state.cjs
+      logs/             vendor-update.log (weekly scheduled run transcript, created on first run)
+      samples/          sample.pdf (also embedded base64 in js/sample-data.js)
 ```
 
 ## Tech notes
@@ -951,18 +1007,21 @@ start-volt.cmd      web launcher (starts server + opens browser)
   Export opens the export modal). It runs in `--smoke-no-focus` too, and
   restores the original window size afterwards. A `launcherGate` stage keeps
   the `.cmd` launchers from silently dying again (the parse bug that once
-  made double-clicking the desktop shortcut do nothing): every launcher must
+  made double-clicking the desktop shortcut do nothing) — the gate covers
+  the repo-root launchers `start-volt-app.cmd` / `start-volt.cmd` and
+  `pdf-viewer/scripts/vendor-weekly.cmd`: every launcher must
   pass static cmd.exe parse-hazard checks (pure ASCII, CRLF, no parentheses
   inside block echo lines, no text after a block-close, balanced blocks,
   defined `call`/`goto` labels), and on Windows the Volt launchers are
   **actually executed through `cmd.exe`** in a throwaway sandbox (stubs on
   PATH, mirrored temp tree) so any parse error — the "… was unexpected at
   this time." class — fails the smoke. The gate also sanity-checks
-  `scripts/start-volt-app-hidden.vbs` (the hidden-console wrapper the desktop
-  shortcut targets): pure ASCII, references `start-volt-app.cmd`, and calls
+  the repo-root `scripts/start-volt-app-hidden.vbs` (the hidden-console
+  wrapper the desktop shortcut targets): pure ASCII, references `start-volt-app.cmd`, and calls
   `WshShell.Run` with window style 0 — so the “no command-prompt box”
   guarantee can't silently regress. Standalone: `npm run check:launchers`
-  from `pdf-viewer/`. An annotation-editing stage drags a text highlight onto an
+  from `pdf-viewer/` — the gate itself is the repo-root
+  `scripts/check-launchers.cjs`. An annotation-editing stage drags a text highlight onto an
   adjacent line and asserts the quads are rebuilt onto a real text line (box
   shown handle-less and dashed, x-extent never widened, undo restores the
   original geometry). A **line-selection stage** locks the drag semantics
@@ -1421,13 +1480,20 @@ it appears, never silently shipped.
 
 ## Development
 
+Every push to `main` (and every pull request) runs these gates on Windows
+CI — see `.github/workflows/ci.yml` at the repo root: `check:launchers`,
+`test:utils`, `test:artifacts` (which itself runs the Electron smoke
+headless, negative and positive), and the slower `release-feed` job (the
+full auto-update round-trip — see "Auto-updates for installed users").
+
 ```bash
-node scripts/make-sample.mjs   # regenerate the sample PDF + embedded copy
+node scripts/make-sample.mjs   # regenerate the sample PDF + embedded copy (from the repo root: scripts/ is Volt/scripts)
 node scripts/test-utils.mjs    # unit tests for utils (chunking, markdown, scoring, focus-trap wrap)
 node scripts/test-file-watcher.mjs  # unit tests for the disk-change watcher
 node scripts/test-artifact-regression.mjs  # generator regression guard (see tech notes)
-npm run test:watch / test:utils / test:artifacts     # the same, via npm
-node scripts/mock-llm.mjs      # fake OpenAI-compatible endpoint for local testing
+node scripts/test-release-feed.mjs   # full auto-update round-trip (publishes a scratch feed, see below)
+npm run test:watch / test:utils / test:artifacts / test:release-feed  # the same, via npm
+node scripts/mock-llm.mjs      # fake OpenAI-compatible endpoint for local testing (from the repo root, as above)
 node serve.mjs                 # static server on :8421
 node scripts/update-vendor.mjs # update vendored pdf.js/pdf-lib (see above)
 node scripts/update-vendor.mjs --verify-staged <dir>  # pre-swap DOM-contract gate only
@@ -1436,8 +1502,10 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
 
 ## Releasing a version
 
-1. Bump `VERSION` (a single `x.y.z` line — the source of truth; `package.json`
-   version is kept in sync for the installer name) and add a `## x.y.z`
+1. Bump **both** version sources to the same `x.y.z` — `VERSION` (a single
+   line, the app-shell source of truth for `window.__VOLT_VERSION`) **and**
+   `version` in `package.json` (the installer name **and** the version
+   electron-updater compares against the release feed) — and add a `## x.y.z`
    section to `CHANGELOG.md` (the version banner's tooltip shows exactly these
    sections to users with a pending update).
 2. `node scripts/gen-sw.mjs --write` — regenerates sw.js (which carries the
@@ -1462,6 +1530,45 @@ shortcuts, and the **`.pdf` file association** (electron-builder's
 `build.fileAssociations` registers `Volt PDF` → the *installed* `Volt.exe`,
 independent of the dev-mode registration the setup scripts make).
 
+**Signing is automatic when a certificate is configured.** electron-builder
+signs `Volt.exe`, the NSIS installer, and the uninstaller with the cert from
+the standard env vars — no build config needed:
+
+```bash
+CSC_LINK=C:\certs\volt.pfx CSC_KEY_PASSWORD=*** npm run dist
+# CSC_LINK may also be a base64-encoded .pfx (convenient for CI secrets);
+# WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD are the Windows-specific aliases.
+```
+
+`npm run sign:check` (`scripts/check-signing.cjs`) gates the OUTPUT: with a
+cert configured it fails unless `Volt.exe` **and** the installer are
+Authenticode-signed by the configured publisher and the packaged
+`app-update.yml` carries a matching `publisherName` (without a cert it
+soft-skips — dev builds are fine unsigned). Run it after any signing build.
+
+### Code signing & SmartScreen
+
+An Authenticode signature from a real CA (DigiCert, Sectigo, …) removes the
+"unknown publisher" block/warning on the installer, and — more importantly —
+**arms the updater's signature verification**: the packaged `app-update.yml`
+then carries the cert's `publisherName` (this is what
+`win.verifyUpdateCodeSignature`, default true, does), so electron-updater
+refuses to download-and-install any release *not* signed by the same
+publisher (`ERR_UPDATER_INVALID_SIGNATURE`). The `release-feed` CI gate
+covers exactly this: with a cert secret configured, the round-trip only
+passes if the advertised installer verifies.
+
+Honest expectations: a brand-new cert still gets a SmartScreen "unrecognized
+app" warning for a while — reputation builds with consistent signed releases
+and install counts. Signing also keeps signatures valid after cert expiry,
+since electron-builder time-stamps every signature (RFC3161 → digicert,
+pinned in `build.win.signtoolOptions`).
+
+For a modern, CI-friendly alternative to owning a PFX, **Azure Trusted
+Signing** issues short-lived certs from an HSM with no password management
+(electron-builder supports it via `win.azureSignOptions` + `AZURE_*` env) —
+useful once distribution scales past a single release key.
+
 **Always smoke the packaged app before distributing a build** — the asar build
 is what users run, and it can fail where the dev tree passes:
 
@@ -1477,6 +1584,77 @@ once the smoke *finishes* it prints `SMOKE_RESULT` and exits, so an **empty
 log is a hang, not a pass**. If it hangs, first check for orphaned `Volt.exe`
 processes — a killed smoke can leave Chromium children holding the disk-cache
 lock that poison the next run: `taskkill /F /IM Volt.exe`.
+
+## Auto-updates for installed users
+
+Installed desktop builds update **themselves** — no reinstall, no manual
+download. On startup (packaged builds only) `main.js` asks the release feed
+whether a newer version exists; if so, it downloads it in the background and
+surfaces the existing **version banner** (with the what's-new tooltip diffed
+from `CHANGELOG.md`, the 15s auto-restart countdown, and the Cancel /
+never-auto-restart settings). The banner's **Restart** installs and relaunches
+(`autoUpdater.quitAndInstall`); simply quitting the app installs the pending
+update too. The feed and updater come from `electron-updater` (a production
+`dependencies` entry, so it ships inside the asar) and the `build.publish`
+config, which electron-builder bakes into `app-update.yml`.
+
+**Shipping a release to installed users:**
+
+```bash
+# from pdf-viewer/, with the version bumped (see Releasing a version):
+GH_TOKEN=$(gh auth token) CSC_LINK=C:\certs\volt.pfx CSC_KEY_PASSWORD=*** npm run release
+#  → builds the installer, SIGNS it with the configured cert, PUBLISHES it +
+#    latest.yml + the .blockmap to GitHub Releases. The blockmap is what
+#    enables small differential updates (downloads only the changed bytes
+#    instead of the whole ~120 MB app). Extra electron-builder args pass
+#    through, e.g. -c.publish.provider=generic -c.publish.url=….
+```
+
+`npm run release` is `scripts/release.cjs`: it **refuses to release without a
+certificate** (releasing unsigned is how SmartScreen warnings start), then
+runs `electron-builder --win nsis --publish always` and exits non-zero unless
+`npm run sign:check` verifies the artifacts came out signed. For unsigned
+dev/private builds use `npm run dist` instead. The same artifacts land in
+`dist/` for manual upload to any host.
+
+**Distribution caveats:**
+
+- **The repo must be readable by end users.** The GitHub provider fetches
+  releases through the public GitHub API, so a *private* repo (like this one
+  right now) needs either making it public, a dedicated public releases repo,
+  or the generic provider. With any static web host (S3, Cloudflare, your own
+  server) the publish config can be pointed at it per-build:
+  `npx electron-builder --win nsis --publish always
+  -c.publish.provider=generic -c.publish.url=https://your-host/volt/` — the
+  client then checks `your-host/volt/latest.yml` instead of GitHub.
+- `VOLT_UPDATE_URL` (an environment variable) overrides the feed at runtime
+  with any generic URL — how the update flow is tested locally, and an
+  enterprise escape hatch.
+- **Unsigned installers trigger SmartScreen** when users first run them
+  (the update download itself needs no elevation). `npm run release` now
+  requires a code-signing certificate (see the Code signing section) — until
+  one is configured, updates still install, users just click through the
+  warning once, and the updater does NOT verify signatures (no
+  `publisherName` in `app-update.yml`).
+- The smoke's wiring guard sends a synthetic `volt:update-downloaded` and
+  asserts the banner appears (desktop mode only), so the main→preload→
+  renderer chain is regression-covered. In packaged builds the SW-based
+  version check is suppressed — those apps get their updates from
+  electron-updater, and the asar bundle can't change under a running app.
+- **The release-feed round-trip gate** (`npm run test:release-feed`,
+  `scripts/test-release-feed.mjs`) proves the REAL chain, not the stub: it
+  builds the installer, publishes a scratch feed (latest.yml + the installer,
+  sha512'd exactly as electron-builder writes a release), serves it over
+  127.0.0.1, launches the packaged app with `--smoke-feed` and
+  `VOLT_UPDATE_URL` pointing at the feed, and asserts the version banner
+  appears — updater engaged, the advertised version downloaded, Restart
+  visible, countdown running. The gate is headless, downloads into a
+  throwaway profile (the updater cache is LOCALAPPDATA-based, so the feed
+  mode re-points it there), and **never installs anything** —
+  `autoInstallOnAppQuit` is disabled in feed mode, and the gate fails loudly
+  if an install dir ever appears. CI runs it as the `release-feed` job;
+  locally `node scripts/test-release-feed.mjs --build` (or without
+  `--build` to reuse an existing `dist/`).
 
 Two build gotchas, both already handled in this repo — keep them in mind when
 touching the build config:

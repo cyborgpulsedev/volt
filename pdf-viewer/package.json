@@ -14,12 +14,19 @@
     "check:vendor": "node scripts/update-vendor.mjs --check",
     "test:watch": "node scripts/test-file-watcher.mjs",
     "test:utils": "node scripts/test-utils.mjs",
+    "test:office": "node scripts/test-office.mjs",
     "test:artifacts": "node scripts/test-artifact-regression.mjs",
+    "test:release-feed": "node scripts/test-release-feed.mjs",
     "check:launchers": "node ../scripts/check-launchers.cjs",
     "gen:sw": "node scripts/gen-sw.mjs --write",
     "auto:vendor": "node scripts/auto-update.cjs --smoke-exe \"node_modules/electron/dist/electron.exe\"",
     "dist": "electron-builder --win nsis",
-    "dist:dir": "electron-builder --win dir"
+    "dist:dir": "electron-builder --win dir",
+    "release": "node scripts/release.cjs",
+    "sign:check": "node scripts/check-signing.cjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "electron": "33.4.11",
@@ -31,24 +38,37 @@
     "asar": true,
     "asarUnpack": [
       "vendor/**"
-    ],
-    "files": [
+    ],    "files": [
       "main.js",
       "preload.js",
       "index.html",
       "css/**/*",
       "js/**/*",
       "vendor/**/*",
-      "assets/**/*",   "samples/**/*",
-   "scripts/**/*",
-   "sw.js",
-   "manifest.json",
-   "package.json"
-  ],
+      "assets/**/*",
+      "samples/**/*",
+      "scripts/**/*",
+      "sw.js",
+      "manifest.json",
+      "package.json",
+      "CHANGELOG.md",
+      "VERSION"
+    ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "assets/volt.ico",
-      "artifactName": "Volt-Setup-${version}.${ext}"
+      "artifactName": "Volt-Setup-${version}.${ext}",
+      "verifyUpdateCodeSignature": true,
+      "signtoolOptions": {
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      }
     },
     "nsis": {
       "oneClick": false,
@@ -66,6 +86,13 @@
         "description": "PDF Document",
         "icon": "assets/volt.ico",
         "role": "Viewer"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "cyborgpulsedev",
+        "repo": "volt"
       }
     ]
   }

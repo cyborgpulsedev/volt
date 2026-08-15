@@ -57,6 +57,13 @@ t("md escapes html", U.markdown("<script>alert(1)</script>").includes("&lt;scrip
 t("md bold", U.markdown("**bold**").includes("<strong>bold</strong>"));
 t("md code fence", U.markdown("```\nconst a = 1\n```").includes("<pre><code>"));
 t("md list", U.markdown("- one\n- two").includes("<li>one</li>"));
+t("md bullet list closes with </ul>", U.markdown("- one\n- two").includes("</ul>"));
+t("md ordered list opens <ol>", U.markdown("1. one\n2. two").includes("<ol>"));
+t("md ordered list closes with </ol>", U.markdown("1. one\n2. two").includes("</ol>"));
+t("md ordered list never emits </ul>", !U.markdown("1. one\n2. two").includes("</ul>"));
+t("md switches ul -> ol", U.markdown("- a\n1. b").includes("</ul><ol>"));
+t("md switches ol -> ul", U.markdown("1. a\n- b").includes("</ol><ul>"));
+t("md text after list is outside it", /<\/ol>\s*<p>after<\/p>/.test(U.markdown("1. one\n\nafter")));
 t("md heading", U.markdown("## Hi").includes("<h2>Hi</h2>"));
 t("md link", U.markdown("[x](https://example.com)").includes('href="https://example.com"'));
 
@@ -88,6 +95,17 @@ t("trap: non-array input → null", U.focusTrapMove(null, A, {}) === null);
 // selector contract: every focusable kind is in tab order, tabindex=-1 is out
 t("trap: selector covers all focusable types", ["button", "[href]", "input", "select", "textarea", "[tabindex]"].every((s) => U.FOCUSABLE_SELECTOR.includes(s)));
 t("trap: selector excludes [tabindex=\"-1\"] via :not()", U.FOCUSABLE_SELECTOR.includes(':not([tabindex="-1"])'));
+
+// ── text-edit word-wrap (pure greedy algorithm, width injected) ──
+const cw = (s) => s.length * 10; // 10 width units per character
+const cw2 = (s) => (s === " " ? 3 : s.length * 8); // narrower separator
+const linesOf = (text, budget, wfn = cw) => U.wrapText(text, wfn, budget);
+t("wrap: fits on one line", JSON.stringify(linesOf("hello world", 300)) === JSON.stringify(["hello world"]));
+t("wrap: splits at the budget", JSON.stringify(linesOf("hello world test", 150)) === JSON.stringify(["hello world", "test"]));
+t("wrap: a word longer than the budget gets its own line", JSON.stringify(linesOf("a bbbbbbbbbbbbbbb c", 100)) === JSON.stringify(["a", "bbbbbbbbbbbbbbb", "c"]));
+t("wrap: collapses whitespace", JSON.stringify(linesOf("a   b\n\n c", 500)) === JSON.stringify(["a b c"]));
+t("wrap: empty / blank input yields []", JSON.stringify(linesOf("", 100)) === "[]" && JSON.stringify(linesOf("   ", 100)) === "[]");
+t("wrap: separator width is honored (narrow sep keeps more words)", JSON.stringify(linesOf("aa bb cc", 40, cw2)) === JSON.stringify(["aa bb", "cc"]));
 
 // ── toolbar-menu navigation (pure wrap decision) ──
 // the decision logic behind the _wireMenus keyboard nav — extracted so a

@@ -1,0 +1,132 @@
+# ═══════════════════════════════════════════════════════════════
+#   Volt — CI
+#   Runs the three fast, deterministic gates on every push /
+#   pull request against main:
+#
+#     1. Launcher integrity   (npm run check:launchers)
+#        static cmd.exe parse-hazard rules + REAL cmd.exe parse
+#        runs in a throwaway sandbox (Windows only — which is why
+#        this job runs on windows-latest) + the hidden-console VBS
+#        wrapper checks. Catches the ".cmd died silently" bug class.
+#
+#     2. Unit tests           (npm run test:utils)
+#        pure helpers: markdown, RAG chunking, focus-trap wrap,
+#        window-state, the launcher/VBS static rules themselves.
+#
+#     3. Artifact regression  (npm run test:artifacts)
+#        the sw.js cache-name / index.html ?v= stamp generator guard.
+#        It ALSO runs the Electron smoke twice (negative with stale
+#        artifacts, positive after regeneration) in --smoke-no-focus
+#        mode — the mode designed for VM/CI sessions, so the full
+#        render + hidden-contract + modal probes are covered here
+#        without the OS-focus-dependent real-keyboard stage.
+#
+#   A fourth, slower gate (release-feed job) runs the auto-update
+#   round-trip end-to-end: it builds the installer, publishes a
+#   scratch release feed (latest.yml + installer) over localhost,
+#   launches the packaged app against it, and asserts the version
+#   banner appears — the real electron-updater detect → download →
+#   banner chain, not a stub. Windows-only and a few minutes (the
+#   NSIS build dominates); see scripts/test-release-feed.mjs.
+#
+#   Install note: dependencies are installed with --ignore-scripts
+#   and the Electron binary is fetched explicitly. electron-builder
+#   (a devDependency the tests never invoke) runs a postinstall that
+#   downloads winCodeSign, which is a known CI flake; skipping it
+#   keeps the gate hermetic.
+#   ═══════════════════════════════════════════════════════════════
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    name: Unit · Artifact · Launcher
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pdf-viewer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies (no postinstall scripts)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      # Restore the Electron binary BEFORE install.js runs — after npm ci
+      # has wiped node_modules — so an unchanged lockfile reuses the cached
+      # dist instead of re-downloading ~110 MB on every push.
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: node_modules/electron/dist
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Launcher integrity (static rules + real cmd.exe parse runs)
+        run: npm run check:launchers
+
+      - name: Unit tests (utils, markdown, chunking, window-state, launcher rules, VBS)
+        run: npm run test:utils
+
+      - name: Artifact-generator regression guard (runs the Electron smoke headless)
+        run: npm run test:artifacts
+
+  release-feed:
+    name: Release-feed round-trip (update → banner)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pdf-viewer
+    # If the repo has CSC_LINK/CSC_KEY_PASSWORD secrets set, this job's build
+    # is SIGNED: the round-trip then also proves the updater's publisher
+    # verification (a signed app-update.yml makes electron-updater reject any
+    # exe not signed by the same publisher). Without the secrets the job runs
+    # unsigned — sign:check soft-skips below.
+    env:
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies (no postinstall scripts)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      # Same Electron cache dance as the checks job: restore BEFORE
+      # install.js runs, so an unchanged lockfile skips the ~110 MB fetch.
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: node_modules/electron/dist
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Electron binary
+        run: node node_modules/electron/install.js
+
+      # Builds the NSIS installer (--publish never), publishes a scratch
+      # generic-provider feed, serves it over 127.0.0.1, launches the
+      # packaged app with --smoke-feed + VOLT_UPDATE_URL, and asserts the
+      # version banner — the full electron-updater chain, for real.
+      - name: Release-feed round-trip (build → publish → install → banner)
+        run: npm run test:release-feed -- --build
+
+      # With a cert secret set: fail unless Volt.exe, the installer, and the
+      # app-update.yml publisherName all verify signed. Without it: soft-skip.
+      - name: Verify signed artifacts (soft-skips without a cert secret)
+        run: npm run sign:check

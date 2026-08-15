@@ -295,9 +295,12 @@
       const lines = src.split("\n");
       let out = "";
       let inCode = false;
-      let inList = false;
+      let listTag = "";
       let codeLang = "";
-      const closeList = () => { if (inList) { out += "</ul>"; inList = false; } };
+      // Track WHICH list is open, not just that one is: closing always with
+      // </ul> left every ordered list unterminated, and a bulleted list
+      // followed directly by a numbered one never switched tags.
+      const closeList = () => { if (listTag) { out += `</${listTag}>`; listTag = ""; } };
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -336,12 +339,12 @@
         const ul = t.match(/^[-*+]\s+(.*)$/);
         const ol = t.match(/^\d+[.)]\s+(.*)$/);
         if (ul) {
-          if (!inList) { out += "<ul>"; inList = true; }
+          if (listTag !== "ul") { closeList(); out += "<ul>"; listTag = "ul"; }
           out += `<li>${Utils.inline(ul[1])}</li>`;
           continue;
         }
         if (ol) {
-          if (!inList) { out += "<ol>"; inList = true; }
+          if (listTag !== "ol") { closeList(); out += "<ol>"; listTag = "ol"; }
           out += `<li>${Utils.inline(ol[1])}</li>`;
           continue;
         }
@@ -351,6 +354,37 @@
       if (inCode) out += "</code></pre>\n";
       closeList();
       return out;
+    },
+
+    /** Greedy word-wrap for text edits: split `text` into lines that each
+        fit `budget`, measuring every word with the caller-supplied `widthOf`
+        (which must return the width of a string in the same units as
+        budget). Whitespace is collapsed first; a word longer than the budget
+        gets its own line rather than being split mid-word. Pure — no DOM, so
+        it's unit-testable. Returns an array of line strings ([] for empty
+        input). */
+    wrapText(text, widthOf, budget) {
+      const words = String(text || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+      if (!words.length) return [];
+      const lines = [];
+      let line = "", lineW = 0;
+      for (const w of words) {
+        const wW = widthOf(w);
+        if (line && lineW + widthOf(" ") + wW > budget) {
+          lines.push(line);
+          line = "";
+          lineW = 0;
+        }
+        if (line) {
+          line += " " + w;
+          lineW += widthOf(" ") + wW;
+        } else {
+          line = w;
+          lineW = wW;
+        }
+      }
+      if (line) lines.push(line);
+      return lines;
     },
 
     /** inline markdown: bold, italic, code, links */

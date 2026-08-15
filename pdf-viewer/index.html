@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Volt — local PDF reader &amp; AI editor</title>
-<link rel="stylesheet" href="css/style.css?v=2dbbeec5">
+<link rel="stylesheet" href="css/style.css?v=208964a2">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='4' width='24' height='24' rx='6' fill='%236c7cff'/%3E%3Cpath d='M10 12h12M10 17h12M10 22h7' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/icon-192.png">
@@ -73,6 +73,7 @@
          from the served CHANGELOG.md when a newer version is detected. -->
     <div id="ver-tip" class="ver-tip" hidden role="tooltip" aria-label="What's new in the pending update"></div>
     <button id="ver-cancel" class="tb-btn ver-cancel" type="button" hidden title="Cancel the countdown — I'll restart when I'm ready">Cancel</button>
+    <button id="ver-download" class="tb-btn ver-btn" type="button" hidden title="Download the update now">Download</button>
     <button id="ver-restart" class="tb-btn ver-btn" type="button">Restart now</button>
     <button id="ver-dismiss" class="tb-btn tb-btn-icon ver-dismiss" type="button" title="Dismiss" aria-label="Dismiss">
       <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -240,6 +241,10 @@
         <button class="tb-menu-item mode-btn" data-mode="note" role="menuitem" title="Add note (N)">
           <svg viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0-9-9 9 9 0 0 0 9 9z"/><path d="M12 11v5"/><circle cx="12" cy="7.5" r=".5"/></svg>
           <span>Note</span><kbd>N</kbd>
+        </button>
+        <button class="tb-menu-item mode-btn" data-mode="text" role="menuitem" title="Text — click a line to edit its wording, font, size or color">
+          <svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+          <span>Text</span>
         </button>
         <div class="tb-menu-sep"></div>
         <button id="btn-sig" class="tb-menu-item" role="menuitem" title="Draw or type a signature, then click the page to place it">
@@ -424,6 +429,45 @@
             <span class="empty-links-dot">·</span>
             <button id="btn-sample-empty" class="link-btn">Try the sample document</button>
           </div>
+        </div>
+      </div>
+
+      <!-- TEXT EDITOR POPOVER (Markup ▸ Text — click a line of text to edit
+           its wording, font, size or color; Apply exports the change) -->
+      <div id="text-edit-pop" class="text-edit-pop" hidden>
+        <div class="text-edit-title">Edit text</div>
+        <textarea id="text-edit-input" rows="2" placeholder="Replacement text…" autocomplete="off" spellcheck="false"></textarea>
+        <div class="text-edit-row">
+          <label>Font
+            <select id="text-edit-font" title="Font family">
+              <option value="match">Match original</option>
+              <option value="helvetica">Helvetica</option>
+              <option value="times">Times</option>
+              <option value="courier">Courier</option>
+            </select>
+          </label>
+          <button id="text-edit-bold" class="mini-btn" type="button" title="Bold" aria-pressed="false">B</button>
+          <button id="text-edit-italic" class="mini-btn" type="button" title="Italic" aria-pressed="false">I</button>
+        </div>
+        <div class="text-edit-row">
+          <label>Size
+            <input id="text-edit-size" type="number" min="4" max="200" step="0.5" title="Font size in points">
+          </label>
+          <span class="text-edit-swatches">
+            <button class="area-swatch" data-color="#111827" title="Near black" style="background:#111827"></button>
+            <button class="area-swatch" data-color="#6b7280" title="Gray" style="background:#6b7280"></button>
+            <button class="area-swatch" data-color="#dc2626" title="Red" style="background:#dc2626"></button>
+            <button class="area-swatch" data-color="#2563eb" title="Blue" style="background:#2563eb"></button>
+            <button class="area-swatch" data-color="#16a34a" title="Green" style="background:#16a34a"></button>
+            <button class="area-swatch" data-color="#ea580c" title="Orange" style="background:#ea580c"></button>
+            <button class="area-swatch" data-color="#7c3aed" title="Purple" style="background:#7c3aed"></button>
+            <input type="color" id="text-edit-color" value="#111827" title="Custom color">
+          </span>
+        </div>
+        <div class="text-edit-hint" id="text-edit-hint"></div>
+        <div class="text-edit-actions">
+          <button id="text-edit-cancel" class="ghost-btn" type="button">Cancel</button>
+          <button id="text-edit-apply" class="primary-btn" type="button">Apply</button>
         </div>
       </div>
 
@@ -673,6 +717,19 @@
            text (the modal open handler toggles visibility) -->
       <button class="export-item" data-export="ocr-txt" id="export-ocr-txt" hidden>OCR text (.txt) <span>Recognized text of scanned pages — one block per page</span></button>
       <button class="export-item" data-export="ocr-md" id="export-ocr-md" hidden>OCR text (.md) <span>Recognized text as Markdown with per-page headings</span></button>
+      <!-- Documents & spreadsheets: the .docx imports into Word, Google Docs
+           and LibreOffice; the .xlsx imports into Excel, Google Sheets and
+           LibreOffice. Tables are detected automatically from column-aligned
+           text; pictures/graphs embedded as images are included in the .docx. -->
+      <div class="export-block">
+        <button class="export-item" data-export="docx" id="export-docx">Word document (.docx) <span>Full text + detected tables &amp; pictures — opens in Word, Google Docs, LibreOffice</span></button>
+        <button class="export-item" data-export="xlsx" id="export-xlsx">Spreadsheet (.xlsx) <span>Detected tables as sheets — opens in Excel, Google Sheets, LibreOffice</span></button>
+        <button class="export-item" data-export="pptx" id="export-pptx">PowerPoint (.pptx) <span>Detected tables &amp; pictures as slides — opens in PowerPoint, Google Slides, LibreOffice</span></button>
+        <button class="export-item" data-export="tsv" id="export-tsv">Copy first table as TSV <span>Paste-ready for Google Sheets or Excel</span></button>
+      </div>
+      <!-- the office exports (Word / Excel / PowerPoint / TSV) honor a live
+           Pages-manager selection — the open handler fills this note in -->
+      <div id="export-sel-note" class="export-sel-note" hidden></div>
       <!-- Backup JSON: the button exports, the checkboxes choose the layers -->
       <div class="export-block">
         <button class="export-item" data-export="json">Backup (JSON) <span>Portable backup for import or restore — tick what it carries</span></button>
@@ -818,10 +875,18 @@
 
       <div class="field-row">
         <div class="field">
-          <label>Version updates <span class="label-note">(when a newer Volt bundle is ready, the banner counts down and restarts on its own — or ask first)</span></label>
+          <label>Version updates <span class="label-note">(desktop app — Volt checks for a newer release on startup, downloads it in the background, and the banner asks you to restart)</span></label>
           <label class="check-row">
             <input type="checkbox" id="set-no-auto-restart">
             <span>Never auto-restart — always ask before restarting</span>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="set-update-startup">
+            <span>Check for updates on startup <span class="label-note">(off = only check when you ask)</span></span>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="set-update-metered">
+            <span>Download updates on metered or slow connections <span class="label-note">(off = Volt offers the download instead of using your data plan)</span></span>
           </label>
         </div>
       </div>
@@ -1502,12 +1567,13 @@
   </script>
   <script src="vendor/pdf-lib.min.js?v=0f9a5cad"></script>
   <script src="vendor/tesseract/tesseract.min.js?v=a8e29918"></script>
-  <script src="js/utils.js?v=4e256ad2"></script>
+  <script src="js/utils.js?v=c835bb92"></script>
   <script src="js/sample-data.js?v=ee9b0500"></script>
-  <script src="js/annotations.js?v=9d92e4dc"></script>
-  <script src="js/ai.js?v=6d1d1d75"></script>
+  <script src="js/annotations.js?v=491d8ea1"></script>
+  <script src="js/ai.js?v=2a112948"></script>
   <script src="js/ocr.js?v=c259b0bc"></script>
   <script src="js/voice.js?v=48c83293"></script>
-  <script src="js/app.js?v=55781880"></script>
+  <script src="js/office-export.js?v=f4485992"></script>
+  <script src="js/app.js?v=460d33c2"></script>
 </body>
 </html>

@@ -24,6 +24,11 @@
 //                                  without touching anything on disk. The
 //                                  vendored-library updater uses this to gate a
 //                                  staged pdf.js/pdf-lib BEFORE the swap)
+//         Volt.exe --smoke-feed      (PACKAGED builds only: end-to-end release-
+//                                  feed round-trip — the real electron-updater
+//                                  chain against VOLT_UPDATE_URL, asserting the
+//                                  version banner. Driven by the CI gate
+//                                  scripts/test-release-feed.mjs)
 //   ═══════════════════════════════════════════════════════════════ */
 "use strict";
 
@@ -33,6 +38,7 @@ const argValue = (name) => {
 };
 
 const { app, BrowserWindow, shell, ipcMain, utilityProcess, screen, session, Menu, dialog } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const { createServer, request: httpRequest } = require("node:http");
 const net = require("node:net");
 const { get: httpsGet } = require("node:https");
@@ -52,7 +58,15 @@ const { recoverInterruptedVendorUpdate } = require(join(APP_ROOT, "scripts", "ve
 // --smoke-no-focus: same render + modal probe, but the window is never shown
 //                 or focused — used as the background auto-update smoke gate
 const SMOKE_BROWSER = process.argv.includes("--smoke-browser");
-const SMOKE = process.argv.includes("--smoke") || process.argv.includes("--smoke-no-focus") || SMOKE_BROWSER;
+// --smoke-feed: end-to-end release-feed round-trip (packaged builds only).
+// With VOLT_UPDATE_URL pointing at a scratch feed (latest.yml + installer)
+// the REAL electron-updater chain runs — startup check → background download
+// → volt:update-downloaded → version banner — and runSmokeFeedTest reports
+// the SMOKE_RESULT. This is the CI release-feed gate's in-app half; the
+// harness (scripts/test-release-feed.mjs) builds the app, publishes the feed,
+// launches it with --smoke-feed, and asserts the result.
+const SMOKE_FEED = process.argv.includes("--smoke-feed");
+const SMOKE = process.argv.includes("--smoke") || process.argv.includes("--smoke-no-focus") || SMOKE_BROWSER || SMOKE_FEED;
 const SMOKE_FOCUS_STAGE = (process.argv.includes("--smoke") || SMOKE_BROWSER) && !process.argv.includes("--smoke-no-focus");
 // --vendor-stage <dir>: serve /vendor/* from <dir> instead of vendor/ (falling
 // back to the real vendor for anything missing). The updater gates a staged
@@ -88,6 +102,13 @@ let smokeProfileDir = null;
 if (SMOKE) {
   smokeProfileDir = mkdtempSync(join(tmpdir(), "volt-smoke-"));
   app.setPath("userData", smokeProfileDir);
+  // electron-updater ignores userData — its cache dir is LOCALAPPDATA-based
+  // (getAppCacheDir), resolved lazily at download time. In the feed gate the
+  // downloaded installer would otherwise land in the REAL AppData\Local and
+  // pollute the machine; pointing LOCALAPPDATA at the throwaway profile keeps
+  // the whole update (download + pending install) inside it, cleaned up with
+  // the profile on exit.
+  if (SMOKE_FEED) process.env.LOCALAPPDATA = smokeProfileDir;
 }
 const cleanupSmokeProfile = () => {
   if (smokeProfileDir) { try { rmSync(smokeProfileDir, { recursive: true, force: true }); } catch (e) { /* best effort */ } }
@@ -439,7 +460,8 @@ async function createWindow(port) {
     });
   }
 
-  if (SMOKE) runSmokeTest(win); // attach listener before the page loads
+  if (SMOKE_FEED) runSmokeFeedTest(win); // real feed round-trip (packaged only)
+  else if (SMOKE) runSmokeTest(win); // attach listener before the page loads
   launchedBundleHash = readBundleHashSync(); // the version THIS window will run
   // ?smoke=1 tells the renderer to skip first-run onboarding (the setup
   // banner / wizard) so the self-test is deterministic — same signal for
@@ -472,6 +494,90 @@ function scheduleVendorAutoUpdate(w) {
       console.log("vendor auto-update check started");
     } catch (e) { console.error("vendor auto-update check failed to start: " + ((e && e.message) || e)); }
   }, 5000).unref();
+}
+
+/* ── app auto-update (electron-updater) ────────────────────────────
+   The DESKTOP app updates itself: on startup (packaged builds only) it
+   asks the release feed (publish config in package.json — GitHub Releases
+   by default, or any static host via the generic provider) whether a
+   newer version exists, downloads it in the background, and surfaces the
+   existing version banner so the user restarts when ready (the banner's
+   auto-restart countdown and Cancel/never-auto-restart settings all apply
+   — and quitting the app installs the pending update automatically).
+   The renderer is told via volt:update-downloaded and the banner's
+   Restart button routes through volt:restart → quitAndInstall().
+
+   Never runs in smoke/dev: a smoke run must be deterministic and an
+   unpackaged dev build has no app-update.yml (electron-updater would
+   throw). VOLT_UPDATE_URL overrides the feed (generic provider) — useful
+   for testing the flow against a local server, and as an escape hatch
+   for enterprise/static-host distribution. VOLT_NO_APP_UPDATE=1 kills
+   the whole feature. Every failure path is silent (console only) — an
+   unreachable feed must never bother the user. */
+let updaterEnabled = false;
+let pendingUpdateVersion = null; // set once an update has finished downloading
+// update preferences from the renderer (volt:update-prefs). checkOnStartup
+// gates the background startup check; allowDownload gates autoUpdater.autoDownload
+// (the renderer computes it from the 'download on metered connections' setting
+// against its NetworkInformation read — main can't see navigator.connection).
+// Defaults match the app's pre-change behavior: check on startup, download freely.
+let updatePrefs = { checkOnStartup: true, allowDownload: true };
+
+function initAppAutoUpdater() {
+  // SMOKE_FEED is the one smoke mode that MUST reach the real updater — the
+  // whole point of the release-feed gate is the genuine detect → download →
+  // banner chain. Every other smoke stays deterministic and never touches it.
+  if (!app.isPackaged || (SMOKE && !SMOKE_FEED) || process.env.VOLT_NO_APP_UPDATE) return;
+  try {
+    const feedUrl = process.env.VOLT_UPDATE_URL;
+    if (feedUrl && /^https?:\/\//i.test(feedUrl)) {
+      autoUpdater.setFeedURL({ provider: "generic", url: feedUrl });
+    }
+    autoUpdater.autoDownload = true; // download silently in the background
+    // The feed gate must NEVER install anything: it quits right after the
+    // banner assert, and autoInstallOnAppQuit would silently run the (real)
+    // NSIS installer mid-gate — on a developer's machine that overwrites
+    // their installed Volt. Real runs keep the quit-applies behavior.
+    autoUpdater.autoInstallOnAppQuit = !SMOKE_FEED;
+    autoUpdater.disableWebInstaller = true; // Volt ships a full NSIS installer, not a web stub
+    autoUpdater.on("update-downloaded", (info) => {
+      pendingUpdateVersion = info && info.version ? info.version : "";
+      console.log("auto-update: downloaded " + pendingUpdateVersion);
+      if (win && !win.isDestroyed()) {
+        win.webContents.send("volt:update-downloaded", { version: pendingUpdateVersion });
+      }
+    });
+    autoUpdater.on("update-available", (info) => {
+      console.log("auto-update: new version available: " + (info && info.version));
+      // background downloads suppressed (metered connection + pref off) — the
+      // renderer must offer the download instead of it being silently skipped
+      if (!autoUpdater.autoDownload && win && !win.isDestroyed()) {
+        win.webContents.send("volt:update-available", { version: info && info.version });
+      }
+    });
+    autoUpdater.on("error", (err) => {
+      console.log("auto-update: " + ((err && err.message) || err));
+    });
+    updaterEnabled = true;
+    // check shortly after startup — let the window and the renderer settle
+    // first, so a fresh install isn't doing network + render at once. The
+    // renderer pushes its prefs within the first second (volt:update-prefs),
+    // so by the time this fires 'check on startup' is already known; if the
+    // pref never arrives (no renderer?) the default true keeps the check.
+    // The feed gate can't wait 12s — its whole budget is ~90s — so it checks
+    // after 2.5s instead (the renderer's prefs arrive within the first second).
+    setTimeout(() => {
+      if (!updatePrefs.checkOnStartup) {
+        console.log("auto-update: startup check disabled by preference (manual only)");
+        return;
+      }
+      autoUpdater.checkForUpdates().catch((e) => console.log("auto-update: check failed: " + ((e && e.message) || e)));
+    }, SMOKE_FEED ? 2500 : 12000).unref();
+    console.log("app auto-update enabled (feed " + (feedUrl || "publish config") + ")");
+  } catch (e) {
+    updaterEnabled = false;
+    console.log("app auto-update disabled: " + ((e && e.message) || e));
+  }
 }
 
 /** Drive the modal focus trap with REAL keyboard input (sendInputEvent), so
@@ -881,6 +987,41 @@ async function realKeyStage(w) {
   return out;
 }
 
+/** Office-export validation stage: the renderer wrote the generated .docx,
+    .xlsx and .pptx to disk — run the real zipfile module over them (integrity
+    + CRC, the OOXML/SpreadsheetML/PresentationML parts, and the content
+    needles) so a broken writer fails the smoke instead of shipping a file
+    Word/Excel/PowerPoint can't open. For each deck, also asserts the slide
+    count the renderer computed matches what's actually in the zip (full deck
+    first, then the Pages-selection subset deck when given). */
+async function validateOfficeStage(docxPath, xlsxPath, pptxPath, subsetPath, subsetSlides) {
+  const result = { ok: false, error: null, stdout: "", pptxSlides: null, subsetSlides: null };
+  const py = join(APP_ROOT, "scripts", "validate-office.py");
+  const args = [py, docxPath, "Quarterly Sales", xlsxPath, "Apples", pptxPath, "Apples", pptxPath, "<p:pic>"];
+  if (subsetPath) args.push(subsetPath, "Page 3");
+  await new Promise((resolve) => {
+    const child = spawn("python", args, { windowsHide: true });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { out += d; });
+    child.on("error", (e) => { result.error = "python spawn: " + e.message; resolve(); });
+    child.on("close", (code) => {
+      result.stdout = out.trim();
+      // python reports each deck's slide count with its path — map them so the
+      // full and subset decks can be checked independently
+      const counts = new Map();
+      for (const m of out.matchAll(/OFFICE_VALIDATE SLIDES (\d+) (.+)/g)) counts.set(m[2].trim(), parseInt(m[1], 10));
+      result.pptxSlides = counts.get(pptxPath) ?? null;
+      result.subsetSlides = subsetPath ? (counts.get(subsetPath) ?? null) : null;
+      const slidesOk = !subsetPath || result.subsetSlides === subsetSlides;
+      result.ok = code === 0 && /OFFICE_VALIDATE OK/.test(out) && slidesOk;
+      if (!result.ok) result.error = "validate-office.py exit " + code + ": " + out.trim().slice(0, 300);
+      resolve();
+    });
+  });
+  return result;
+}
+
 /** Responsive-toolbar stage: resize the window across the CSS media-query
     breakpoints (1280 → 760, the last two below the desktop 900px minimum —
     narrow browser-window widths) and assert the right-end controls (sidebar /
@@ -971,7 +1112,9 @@ async function toolbarResizeStage(w) {
       out.viewHas = ["btn-fit-width", "btn-fit-page", "btn-rotate", "btn-theme-light", "btn-theme-dark"].every(has);
       out.toolsHas = ["btn-ocr", "btn-ocr-lang", "btn-ocr-layer", "btn-readaloud"].every(has);
       out.markupHas = ["btn-sig", "btn-date", "btn-form"].every(has) &&
-        [...document.querySelectorAll("#menu-markup-panel .mode-btn")].length === 6;
+        // Select / Highlight / Rect / Underline / Strike / Note / Text (7 tools —
+        // the Text tool joined the panel last; bump when a tool is added/removed)
+        [...document.querySelectorAll("#menu-markup-panel .mode-btn")].length === 7;
       // ARIA contract: every trigger is a menu button (haspopup + expanded +
       // controls pointing at its panel), every panel is role=menu, every item
       // role=menuitem, and all triggers START collapsed (aria-expanded=false)
@@ -1243,12 +1386,23 @@ function runSmokeTest(w) {
       } catch (e) {
         swGenErr = String((e && e.message) || e);
       }
+      // office-export smoke artifacts: the renderer writes the generated
+      // .docx / .xlsx / .pptx here, then main validates them with the real
+      // zipfile module (scripts/validate-office.py)
+      const officeTmp1 = join(smokeProfileDir, "office-test.docx");
+      const officeTmp2 = join(smokeProfileDir, "office-test.xlsx");
+      const officeTmp3 = join(smokeProfileDir, "office-test.pptx");
+      const officeTmp4 = join(smokeProfileDir, "office-test-subset.pptx");
       const result = await w.webContents.executeJavaScript(`(async () => {
         const SAMPLE_PDF = ${JSON.stringify(join(APP_ROOT, "samples", "sample.pdf"))};
         const WATCH_TMP_PATH = ${JSON.stringify(watchTmp ? watchTmp.target : null)};
         const WATCH_TMP = ${JSON.stringify(watchTmp ? basename(watchTmp.target) : null)};
         const DISK_TMP_PATH = ${JSON.stringify(watchTmp ? watchTmp.diskTarget : null)};
         const DISK_TMP = ${JSON.stringify(watchTmp ? basename(watchTmp.diskTarget) : null)};
+        const OFFICE_TMP1 = ${JSON.stringify(officeTmp1)};
+        const OFFICE_TMP2 = ${JSON.stringify(officeTmp2)};
+        const OFFICE_TMP3 = ${JSON.stringify(officeTmp3)};
+        const OFFICE_TMP4 = ${JSON.stringify(officeTmp4)};
         const EXPECT_DOC = ${JSON.stringify(argvPdf ? basename(argvPdf) : null)};
         const EXPECT_SW_CACHE = ${JSON.stringify(expectSwCache)};
         const EXPECT_VERSION = ${JSON.stringify(expectVersion)};
@@ -2298,6 +2452,20 @@ function runSmokeTest(w) {
               voice.toolAnns = tAnns.annotations.length >= 2;
               const tNav = JSON.parse(await Volt.AI._runTool("navigate_to_page", { page: 1 }));
               voice.toolNav = tNav.ok === true;
+              // the AI text-edit tool: 'change X to Y' must land a text
+              // annotation through the same path as the Text tool, and undo
+              // right away (proving the edit is on the user's undo stack)
+              const tEdit = JSON.parse(await Volt.AI._runTool("edit_text", { page: 1, find: "quiet engine", replace: "quiet motor" }));
+              voice.toolEdit = tEdit.ok === true && Volt.Ann.list.some((a) => a.type === "text" && /quiet motor/.test(a.text || ""));
+              Volt.Ann.undo();
+              voice.toolEditUndone = tEdit.ok === true && !Volt.Ann.list.some((a) => a.type === "text");
+              // a replacement LONGER than the line must wrap: the committed
+              // edit carries a wrap layout with the overflow lines' geometry
+              const tWrap = JSON.parse(await Volt.AI._runTool("edit_text", { page: 1, find: "quiet engine", replace: "quiet engine with a long replacement phrase that will definitely wrap across several lines on this page" }));
+              const wrapAnn = Volt.Ann.list.filter((x) => x.type === "text").pop();
+              voice.toolWrap = tWrap.ok === true && !!wrapAnn && Array.isArray(wrapAnn.wrap) && wrapAnn.wrap.length >= 2 && wrapAnn.wrap[1].y < wrapAnn.wrap[0].y;
+              Volt.Ann.undo();
+              voice.toolWrapUndone = !Volt.Ann.list.some((a) => a.type === "text");
               // ── the tool-call LOOP through a fake streamed response ──
               // the model asks to add_highlight; the harness must execute it,
               // append the tool result to the messages, and stream a final
@@ -2358,6 +2526,8 @@ function runSmokeTest(w) {
               voice.toolInfo === true && voice.toolSearch === true &&
               voice.toolHighlight === true && voice.toolNote === true &&
               voice.toolAnns === true && voice.toolNav === true &&
+              voice.toolEdit === true && voice.toolEditUndone === true &&
+              voice.toolWrap === true && voice.toolWrapUndone === true &&
               voice.toolLoop === true && voice.toolLoopSentTool === true &&
               voice.toolLoopResultFed === true && voice.toolLoopCreated === true &&
               voice.toolRemove === true && voice.cleaned === true && !voice.error;
@@ -2501,7 +2671,7 @@ function runSmokeTest(w) {
                 // ENABLED at this point — the ready render just ran)
                 bootPrimary.click();
                 let t0 = Date.now();
-                while (Date.now() - t0 < 5000 && AI.settings.model !== "qwen3:4b") {
+                while (Date.now() - t0 < 8000 && AI.settings.model !== "qwen3:4b") {
                   await new Promise((r) => setTimeout(r, 60));
                 }
                 boot.pulled = AI.settings.model === "qwen3:4b" && AI.settings.provider === "ollama" &&
@@ -2525,7 +2695,7 @@ function runSmokeTest(w) {
                 boot.primaryUse = bootPrimary.textContent.indexOf("Use qwen3:8b") >= 0;
                 bootPrimary.click();
                 t0 = Date.now();
-                while (Date.now() - t0 < 5000 && AI.settings.model !== "qwen3:8b") {
+                while (Date.now() - t0 < 8000 && AI.settings.model !== "qwen3:8b") {
                   await new Promise((r) => setTimeout(r, 60));
                 }
                 boot.used = AI.settings.model === "qwen3:8b" && pullBodies.length === 1;
@@ -2568,7 +2738,7 @@ function runSmokeTest(w) {
                   const pullsBefore = pullBodies.length;
                   tierBtn.click();
                   t0 = Date.now();
-                  while (Date.now() - t0 < 5000 && AI.settings.model !== "qwen3:4b") {
+                  while (Date.now() - t0 < 8000 && AI.settings.model !== "qwen3:4b") {
                     await new Promise((r) => setTimeout(r, 60));
                   }
                   boot.tier.installed = AI.settings.model === "qwen3:4b" &&
@@ -2582,7 +2752,7 @@ function runSmokeTest(w) {
                   boot.tier.useLabel = tierBtn.textContent.indexOf("Use qwen3:8b") >= 0;
                   tierBtn.click();
                   t0 = Date.now();
-                  while (Date.now() - t0 < 5000 && AI.settings.model !== "qwen3:8b") {
+                  while (Date.now() - t0 < 8000 && AI.settings.model !== "qwen3:8b") {
                     await new Promise((r) => setTimeout(r, 60));
                   }
                   boot.tier.used = AI.settings.model === "qwen3:8b" && pullBodies.length === pullsBefore2;
@@ -5958,6 +6128,194 @@ function runSmokeTest(w) {
                 document.getElementById("export-ocr-md").hidden === true;
               document.getElementById("export-close").click();
             } catch (e) { ocr.error = String((e && e.message) || e); }
+            // ── office export stage (last — opens its own table document) ──
+            // builds a small PDF with a title, a prose line, an embedded
+            // picture and a 4x3 text-drawn table; the collectors must detect
+            // the table and image, the .docx/.xlsx must be written to disk,
+            // and main validates them with the real zipfile module
+            const office = { error: null };
+            try {
+              // the Word/Excel/PowerPoint/TSV items are always offered in the
+              // export modal
+              document.getElementById("btn-export").click();
+              await new Promise((r) => setTimeout(r, 250));
+              office.modalItems = document.getElementById("export-docx").hidden === false &&
+                document.getElementById("export-xlsx").hidden === false &&
+                document.getElementById("export-pptx").hidden === false &&
+                document.getElementById("export-tsv").hidden === false;
+              document.getElementById("export-close").click();
+              const oCanvas = document.createElement("canvas");
+              oCanvas.width = 200; oCanvas.height = 60;
+              const og = oCanvas.getContext("2d");
+              og.fillStyle = "#4a6cf7"; og.fillRect(0, 0, 200, 60);
+              og.fillStyle = "#fff"; og.font = "bold 28px sans-serif"; og.fillText("CHART", 55, 38);
+              const oPng = Uint8Array.from(atob(oCanvas.toDataURL("image/png").split(",")[1]), (ch) => ch.charCodeAt(0));
+              const oPdf = await window.PDFLib.PDFDocument.create();
+              const oPage = oPdf.addPage([612, 792]);
+              const oHelv = await oPdf.embedFont(window.PDFLib.StandardFonts.Helvetica);
+              oPage.drawText("Quarterly Sales", { x: 60, y: 750, size: 20, font: oHelv });
+              oPage.drawText("A normal paragraph describing the numbers in prose form.", { x: 60, y: 726, size: 12, font: oHelv });
+              const oImg = await oPdf.embedPng(oPng);
+              oPage.drawImage(oImg, { x: 60, y: 640, width: 200, height: 60 });
+              const oCols = [60, 220, 380], oRows = [590, 570, 550, 530];
+              const oHeader = ["Item", "Qty", "Price"];
+              const oData = [["Apples", "3", "2.50"], ["Pears", "7", "1.10"], ["Total", "10", "3.60"]];
+              for (let c = 0; c < 3; c++) oPage.drawText(oHeader[c], { x: oCols[c], y: oRows[0], size: 12, font: oHelv });
+              for (let r = 1; r < oRows.length; r++) for (let c = 0; c < 3; c++) oPage.drawText(oData[r - 1][c], { x: oCols[c], y: oRows[r], size: 12, font: oHelv });
+              // a gridlines-only table: 3 cols x 2 rows of stroked rects, NO
+              // text — the vector-grid detector must see it (blank forms)
+              const oBorder = window.PDFLib.rgb(0.2, 0.2, 0.25);
+              for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++)
+                oPage.drawRectangle({ x: 60 + c * 160, y: 420 - r * 40, width: 160, height: 40, borderColor: oBorder, borderWidth: 1 });
+              // a merged-cell table: a full-width header cell + 3 body cells,
+              // header text spanning columns 1-2 — the grid flattens it to one
+              // cell with empty neighbors
+              oPage.drawRectangle({ x: 60, y: 290, width: 480, height: 40, borderColor: oBorder, borderWidth: 1 });
+              for (let c = 0; c < 3; c++) oPage.drawRectangle({ x: 60 + c * 160, y: 250, width: 160, height: 40, borderColor: oBorder, borderWidth: 1 });
+              oPage.drawText("Combined", { x: 70, y: 302, size: 12, font: oHelv });
+              oPage.drawText("Alpha", { x: 70, y: 262, size: 12, font: oHelv });
+              oPage.drawText("Beta", { x: 230, y: 262, size: 12, font: oHelv });
+              oPage.drawText("Gamma", { x: 390, y: 262, size: 12, font: oHelv });
+              const oBytes = await oPdf.save();
+              await Volt.App.openBuffer(oBytes.slice(0), "office-table.pdf", oBytes.byteLength);
+              await new Promise((r) => setTimeout(r, 500));
+              const coll = await window.OfficeExport.collect(Volt.App);
+              office.collected = !!coll && coll.pages.length === 1 && !!coll.title;
+              const oPg = coll && coll.pages[0];
+              const oTabs = (oPg && oPg.tables) || [];
+              office.tableCount = oTabs.length;
+              // the text-gap table (4 x 3) must still be found, the drawn grid
+              // table must appear as a blank 2 x 3 grid, and the merged table
+              // must flatten to its first column with empty neighbors
+              office.hasTextTable = oTabs.some((t) => t.length === 4 && t[0] && t[0].length === 3 &&
+                t[0][0] === "Item" && t[3][2] === "3.60");
+              office.hasGridTable = oTabs.some((t) => t.length === 2 && t[0] && t[0].length === 3 &&
+                t.every((r) => r.every((c) => !String(c || "").trim())));
+              const mergedT = oTabs.find((t) => t.some((r) => r.some((c) => /Combined/.test(String(c || "")))));
+              office.hasMergedTable = !!mergedT && mergedT[0][0] === "Combined" &&
+                !String(mergedT[0][1] || "").trim() && !String(mergedT[0][2] || "").trim() &&
+                mergedT[1][0] === "Alpha" && mergedT[1][1] === "Beta" && mergedT[1][2] === "Gamma";
+              office.imageCount = oPg ? oPg.images.length : 0;
+              office.titleFound = !!(oPg && oPg.paragraphs.some((p) => /Quarterly Sales/.test(p.text)));
+              // table lines must NOT also appear as paragraphs (no doubling)
+              office.paraExcludesTable = !!(oPg && oPg.paragraphs.some((p) => /normal paragraph/.test(p.text)) &&
+                !oPg.paragraphs.some((p) => /Apples/.test(p.text)));
+              // the merged header is table text, not prose
+              office.mergedNotProse = !(oPg && oPg.paragraphs.some((p) => /Combined/.test(p.text)));
+              // the spreadsheet/TSV samples come from the text table (the
+              // grid-only table is blank, so it would make a useless sample)
+              const oTabT = oTabs.find((t) => t.length === 4);
+              const oDocx = window.OfficeExport.docx(coll);
+              const oXlsx = window.OfficeExport.xlsx({ sheets: [{ name: "Table 1", rows: oTabT }] });
+              office.docxSize = oDocx.length; office.xlsxSize = oXlsx.length;
+              // desktop-bridge checks (temp-file writes + 'Open with…'):
+              // Electron-only — browser/PWA mode has no preload bridge, so
+              // these become N/A there (the detection assertions above are the
+              // real content checks and run in both modes). main skips the
+              // python zip validation when this flag says the bridge was
+              // absent, so no phantom missing-file failure.
+              // deck = title slide + per page (prose slide + table slide(s) +
+              // image slide(s)); the 1-page test doc has 1 prose + 3 tables
+              // (text-gap + drawn grid + merged) + 1 image, so the whole deck
+              // must be exactly 6 slides — python re-counts the zip to verify
+              const oPptx = window.OfficeExport.pptx(coll);
+              office.pptxSize = oPptx.length;
+              // the builder reports its REAL slide count (prose slides chunk
+              // when a page's text is long, so it can exceed the simple
+              // formula) — python must find exactly this many in the zip
+              office.expectedSlides = oPptx.slideCount;
+              const oTsv = window.OfficeExport.tsv(oTabT);
+              // String.fromCharCode keeps the probe template single-line — a
+              // backslash-n escape would become a real newline in the output
+              office.tsvShape = oTsv.includes(String.fromCharCode(9)) && oTsv.includes(String.fromCharCode(10));
+              // desktop-bridge checks (temp-file writes + 'Open with…'):
+              // Electron-only — browser/PWA mode has no preload bridge, so
+              // these become N/A there (the detection assertions above are the
+              // real content checks and run in both modes). main skips the
+              // python zip validation when this flag says the bridge was
+              // absent, so no phantom missing-file failure.
+              office.desktopSkipped = !window.voltDesktop ||
+                typeof window.voltDesktop.writeFile !== "function";
+              if (!office.desktopSkipped) {
+                // 'Open with…' bridge: the renderer hands the bytes to the OS
+                // default handler — under --smoke main writes the temp file
+                // and reports the path WITHOUT launching Word/Excel, so
+                // assert the round-trip (ok + a .docx temp path) here
+                const openR = await window.voltDesktop.openWith("office-open-test.docx", oDocx);
+                office.openWithOk = !!(openR && openR.ok && /office-open-test\.docx$/i.test(openR.path || ""));
+                const w1 = await window.voltDesktop.writeFile(OFFICE_TMP1, oDocx);
+                const w2 = await window.voltDesktop.writeFile(OFFICE_TMP2, oXlsx);
+                const w3 = await window.voltDesktop.writeFile(OFFICE_TMP3, oPptx);
+                office.written = !!(w1 && w1.ok) && !!(w2 && w2.ok) && !!(w3 && w3.ok);
+              } else {
+                office.openWithOk = true; // N/A — no shell to hand files to
+                office.written = true;
+              }
+              // back to the sample so the probe ends where the realKeys stage
+              // expects it (3 pages — the kb sub-stage seeds pages 1 and 3 and
+              // clicks thumb-grid items for them; leaving the 1-page
+              // office-table.pdf open makes q(3) null and the stage throws)
+              Volt.App.openSample();
+              const oT2 = Date.now();
+              while (Date.now() - oT2 < 8000 && (!Volt.App.currentDocInfo || Volt.App.currentDocInfo.name !== "The Quiet Engine — sample.pdf")) {
+                await new Promise((r) => setTimeout(r, 200));
+              }
+              office.restoredSample = !!Volt.App.currentDocInfo && Volt.App.currentDocInfo.name === "The Quiet Engine — sample.pdf";
+              // ── selection-aware office exports ──────────────────────
+              // a live Pages-manager selection must drive the office exports:
+              // seed one on the sample (plan indexes 0 and 2 = pages 1 and 3),
+              // then verify the helper maps it, the collectors honor the page
+              // list (actual page numbers preserved), and the deck shrinks to
+              // match. Also: a whole-document selection is no filter, and a
+              // dirty plan (staged blank) maps the doc pages with the
+              // insertion counted as skipped.
+              Volt.App._pagePlanDoc = Volt.App.currentDoc;
+              Volt.App._pagePlan = [{ kind: "doc", oldPage: 1 }, { kind: "doc", oldPage: 2 }, { kind: "doc", oldPage: 3 }];
+              Volt.App._pageSel = new Set([0, 2]);
+              const selA = Volt.App._pagesSelectedForExport();
+              office.selPages = selA ? selA.pages : null;
+              office.selSkipped = selA ? selA.skipped : -1;
+              const collSel = await window.OfficeExport.collect(Volt.App, selA && selA.pages);
+              office.selCollected = !!collSel && collSel.pages.length === 2 &&
+                collSel.pages[0].num === 1 && collSel.pages[1].num === 3;
+              const selPptx = window.OfficeExport.pptx(collSel);
+              office.selPptxBytes = selPptx.length;
+              office.selExpectedSlides = selPptx.slideCount; // the deck's real size
+              office.selWritten = office.desktopSkipped ? true :
+                !!(await window.voltDesktop.writeFile(OFFICE_TMP4, selPptx) || {}).ok;
+              // whole-document selection → null (normal whole-doc export)
+              Volt.App._pageSel = new Set([0, 1, 2]);
+              office.selWholeIsNull = Volt.App._pagesSelectedForExport() === null;
+              // dirty plan: the staged blank can't be exported from the open
+              // document, so it counts as skipped and the doc pages still map
+              Volt.App._pagePlan = [{ kind: "doc", oldPage: 1 }, { kind: "blank", w: 612, h: 792 }, { kind: "doc", oldPage: 3 }];
+              Volt.App._pageSel = new Set([0, 1, 2]);
+              const selB = Volt.App._pagesSelectedForExport();
+              office.selDirtyPages = selB ? selB.pages : null;
+              office.selDirtySkipped = selB ? selB.skipped : -1;
+              // clean up — later stages (realKeys) must start from a fresh
+              // manager state
+              Volt.App._pageSel = null; Volt.App._pagePlan = null; Volt.App._pagePlanDoc = null;
+            } catch (e) { office.error = String((e && e.message) || e); }
+            office.selPagesListOk = !!office.selPages && office.selPages.length === 2 &&
+              office.selPages[0] === 1 && office.selPages[1] === 3 && office.selSkipped === 0;
+            office.selDirtyOk = !!office.selDirtyPages && office.selDirtyPages.length === 2 &&
+              office.selDirtyPages[0] === 1 && office.selDirtyPages[1] === 3 && office.selDirtySkipped === 1;
+            // the subset deck must actually cover the 2 selected pages: at
+            // least title + 2 prose slides (prose pages chunk, so it can be
+            // more — python asserts the exact count on the written file)
+            office.selAllOk = office.selPagesListOk === true && office.selCollected === true &&
+              office.selPptxBytes > 1500 && office.selExpectedSlides >= 3 &&
+              office.selWritten === true && office.selWholeIsNull === true && office.selDirtyOk === true;
+            office.allOk = office.modalItems === true && office.collected === true &&
+              office.tableCount === 3 && office.hasTextTable === true &&
+              office.hasGridTable === true && office.hasMergedTable === true &&
+              office.imageCount >= 1 && office.titleFound === true &&
+              office.paraExcludesTable === true && office.mergedNotProse === true &&
+              office.docxSize > 3000 && office.xlsxSize > 1500 &&
+              office.pptxSize > 3000 && office.expectedSlides === 6 &&
+              office.tsvShape === true && office.written === true &&
+              office.selAllOk === true && office.openWithOk === true && !office.error;
             ocr.allOk = ocr.engine === true && ocr.docBuilt === true && ocr.opened === true &&
               ocr.buttonShown === true && ocr.recognized === true && ocr.textLayer === true &&
               ocr.textLayerSurvives === true && ocr.searchFound === true &&
@@ -5977,7 +6335,7 @@ function runSmokeTest(w) {
               ocr.fpRenamedMatches === true && ocr.fpDoctoredRejected === true &&
               ocr.restored === true && !ocr.error;
             return {
-              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && ocr.allOk,
+              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && ocr.allOk && office.allOk,
               voice,
               bootstrap: boot,
               ocr,
@@ -6010,6 +6368,7 @@ function runSmokeTest(w) {
               desktop,
               modal,
               watch,
+              office,
               stages: out,
             };
           }
@@ -6038,6 +6397,27 @@ function runSmokeTest(w) {
       if (watchReadyPoller) { clearInterval(watchReadyPoller); watchReadyPoller = null; }
       if (watchTmp) { try { rmSync(watchTmp.dir, { recursive: true, force: true }); } catch (e) { /* ignore */ } }
       if (!result.ok) return report(false, result);
+      // office-export ground truth: the renderer wrote the .docx/.xlsx/.pptx
+      // (plus the Pages-selection subset deck) to disk — validate them with
+      // the real zipfile module (integrity + CRC, OOXML/PresentationML parts,
+      // the content the collector detected, and both decks' slide counts).
+      // Browser/PWA smoke has no preload bridge, so nothing was written and
+      // the python stage is skipped there (the renderer-side detection
+      // assertions already ran in both modes).
+      const officeDesktopSkipped = !!(result.office && result.office.desktopSkipped);
+      let officeValidate = { ok: true, pptxSlides: null, subsetSlides: null, skipped: officeDesktopSkipped };
+      if (!officeDesktopSkipped) {
+        officeValidate = await validateOfficeStage(officeTmp1, officeTmp2, officeTmp3, officeTmp4, result.office && result.office.selExpectedSlides);
+      }
+      // the decks must contain exactly the slides the renderer computed: the
+      // full deck (title + prose + table slides + image for the test doc: 6)
+      // and the subset deck from the selection (title + 2 pages' prose)
+      const officeSlidesOk = officeDesktopSkipped || (
+        officeValidate.pptxSlides === (result.office && result.office.expectedSlides) &&
+        officeValidate.subsetSlides === (result.office && result.office.selExpectedSlides));
+      if (!officeSlidesOk) {
+        return report(false, { ...result, error: "pptx slide count mismatch: python found " + officeValidate.pptxSlides + "/" + officeValidate.subsetSlides + ", renderer expected " + (result.office && result.office.expectedSlides) + "/" + (result.office && result.office.selExpectedSlides) });
+      }
       // pin the smoke's context invariant: Electron modes must have the preload
       // bridge, browser mode must NOT — a future change that flips either
       // (e.g. re-adding the preload to --smoke-browser) fails loudly instead of
@@ -6058,6 +6438,89 @@ function runSmokeTest(w) {
         const updateToastOk = await w.webContents.executeJavaScript(
           `[...document.querySelectorAll(".toast")].some((t) => t.textContent.includes("updated pdf.js to 9.9.9"))`);
         if (!updateToastOk) return report(false, { ...result, updateToast: false });
+        // app auto-update wiring: the updater's "update-downloaded" IPC must
+        // surface the version banner, marked desktop-pending (so the SW check
+        // can't hide it) and carrying the downloaded version. Then stop the
+        // live countdown and restore state so the rest of the run stays
+        // deterministic — a 15s auto-restart must never fire mid-smoke.
+        w.webContents.send("volt:update-downloaded", { version: "9.9.9" });
+        // poll for the banner instead of a fixed sleep — IPC + render latency
+        // jitters under load and fixed waits were tipping over (same class as
+        // the bootstrap-tier flake). The assertions are unchanged.
+        let dlSeen = false;
+        for (let i = 0; i < 40 && !dlSeen; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          dlSeen = await w.webContents.executeJavaScript(
+            `document.getElementById("ver-banner").hidden === false`);
+        }
+        if (!dlSeen) return report(false, { ...result, updateBanner: { shown: false, pollTimeout: true } });
+        const updateBanner = await w.webContents.executeJavaScript(`(() => {
+          const V = window.Volt.App;
+          const vb = document.getElementById("ver-banner");
+          const shown = !!vb && vb.hidden === false;
+          const pending = V._verDesktopPending === true;
+          const servedVer = V._verServedVersion === "9.9.9";
+          // also assert the packaged-mode suppression decided CORRECTLY for
+          // this run: packaged runs must skip the SW check (updater owns it),
+          // unpackaged runs must keep it (dev flow) — a flip either way fails
+          const suppress = V._packaged === true;
+          const desktopSuppressOk = typeof V._packaged === "boolean";
+          V._stopVerCountdown();
+          V._hideVersionBanner();
+          V._verDesktopPending = false;
+          delete V._verServed;
+          return { shown, pending, servedVer, suppress, desktopSuppressOk };
+        })()`);
+        if (!(updateBanner.shown && updateBanner.pending && updateBanner.servedVer &&
+              updateBanner.desktopSuppressOk && updateBanner.suppress === app.isPackaged)) {
+          return report(false, { ...result, updateBanner });
+        }
+        // suppressed-downloads path: volt:update-available must show the
+        // banner in 'available' mode (Download visible, Restart hidden, NO
+        // countdown — nothing downloaded yet), and a Download click must
+        // round-trip through the bridge. The smoke's updater is disabled, so
+        // the IPC answers { ok:false, error:'updater disabled' } — the button
+        // re-arms and the failure is toasted, which is exactly the wiring we
+        // assert (a real run downloads instead).
+        w.webContents.send("volt:update-available", { version: "9.9.9" });
+        // poll for the banner (and later the click round-trip) — same
+        // load-jitter hardening as the downloaded-banner stage above.
+        let availSeen = false;
+        for (let i = 0; i < 40 && !availSeen; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          availSeen = await w.webContents.executeJavaScript(
+            `document.getElementById("ver-banner").hidden === false`);
+        }
+        if (!availSeen) return report(false, { ...result, updateAvail: { shown: false, pollTimeout: true } });
+        const updateAvail = await w.webContents.executeJavaScript(`(async () => {
+          const V = window.Volt.App;
+          const vb = document.getElementById("ver-banner");
+          const dlBtn = document.getElementById("ver-download");
+          const shown = !!vb && vb.hidden === false;
+          const dlVisible = !!dlBtn && dlBtn.hidden === false && getComputedStyle(dlBtn).display !== "none";
+          const restartHidden = document.getElementById("ver-restart").hidden === true;
+          const noCountdown = !V._verTimer;
+          const text = document.getElementById("ver-banner-text").textContent;
+          const hasVersion = text.includes("9.9.9") && text.includes("available");
+          if (dlBtn) dlBtn.click();
+          for (let i = 0; i < 40; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            if (dlBtn && dlBtn.disabled === false && dlBtn.hidden === false) break;
+          }
+          const dlReEnabled = !!dlBtn && dlBtn.disabled === false && dlBtn.hidden === false;
+          const errToast = [...document.querySelectorAll(".toast")].some((t) =>
+            t.textContent.includes("Update download failed"));
+          V._stopVerCountdown();
+          V._hideVersionBanner();
+          V._verDesktopPending = false;
+          delete V._verServed;
+          return { shown, dlVisible, restartHidden, noCountdown, hasVersion, dlReEnabled, errToast };
+        })()`);
+        if (!(updateAvail.shown && updateAvail.dlVisible && updateAvail.restartHidden &&
+              updateAvail.noCountdown && updateAvail.hasVersion && updateAvail.dlReEnabled &&
+              updateAvail.errToast)) {
+          return report(false, { ...result, updateAvail });
+        }
       }
       // responsive-toolbar stage: resize the window across the CSS breakpoints
       // and assert the right-end controls stay on-screen (pure layout check —
@@ -6071,14 +6534,14 @@ function runSmokeTest(w) {
       // real-keyboard stage: it shows + focuses the window, which would flash
       // and steal focus during a background update. The render probe above
       // still covers the full render chain + hidden contract + modal trap.
-      if (!SMOKE_FOCUS_STAGE) return report(result.ok && toolbarResize.ok && launcherGate.ok, { ...result, toolbarResize, launcherGate, updateToast: SMOKE_BROWSER ? "skipped-browser" : true });
+      if (!SMOKE_FOCUS_STAGE) return report(result.ok && officeValidate.ok && officeSlidesOk && toolbarResize.ok && launcherGate.ok, { ...result, officeValidate, officeSlidesOk, toolbarResize, launcherGate, updateToast: SMOKE_BROWSER ? "skipped-browser" : true });
       // real-keyboard stage: drive Tab/Shift+Tab/Escape through Chromium's
       // native input pipeline (sendInputEvent) instead of synthetic dispatch,
       // so mid-modal focus navigation is verified with real key events
       const realKeys = await realKeyStage(w);
       // gate the overall result on ALL stages: a renderer-probe failure must
       // not be masked by a passing keyboard stage (or vice versa)
-      report(result.ok && toolbarResize.ok && launcherGate.ok && realKeys.ok, { ...result, toolbarResize, launcherGate, realKeys, updateToast: SMOKE_BROWSER ? "skipped-browser" : true });
+      report(result.ok && officeValidate.ok && officeSlidesOk && toolbarResize.ok && launcherGate.ok && realKeys.ok, { ...result, officeValidate, officeSlidesOk, toolbarResize, launcherGate, realKeys, updateToast: SMOKE_BROWSER ? "skipped-browser" : true });
     } catch (e) {
       if (watchReadyPoller) { clearInterval(watchReadyPoller); watchReadyPoller = null; }
       if (watchTmp) { try { rmSync(watchTmp.dir, { recursive: true, force: true }); } catch (err) { /* ignore */ } }
@@ -6087,6 +6550,89 @@ function runSmokeTest(w) {
   };
 
   w.webContents.once("did-finish-load", () => setTimeout(probe, 800));
+}
+
+/** Release-feed round-trip self-test (--smoke-feed, packaged build only).
+    The REAL electron-updater chain runs against a scratch feed served at
+    VOLT_UPDATE_URL (generic provider): startup check → update found →
+    background download → volt:update-downloaded → the version banner. This
+    is the CI release-feed gate's in-app half — the harness
+    (scripts/test-release-feed.mjs) builds the app, publishes the feed
+    (latest.yml + installer), launches it with --smoke-feed, and asserts the
+    SMOKE_RESULT. Nothing is stubbed: updaterEnabled and pendingUpdateVersion
+    come from the live autoUpdater in this process. */
+function runSmokeFeedTest(w) {
+  const expected = process.env.VOLT_FEED_EXPECT_VERSION || "";
+  const deadline = Date.now() + 75 * 1000; // check (2.5s) + download + banner
+
+  // watchdog: never hang a CI run — hard-exit if nothing reports
+  setTimeout(() => {
+    console.log("SMOKE_RESULT " + JSON.stringify({ ok: false, error: "feed watchdog timeout" }));
+    cleanupSmokeProfile();
+    if (process.platform === "win32") {
+      try { require("node:child_process").execSync("taskkill /F /T /PID " + process.pid); } catch (e) { /* already gone */ }
+    }
+    app.exit(2);
+  }, 90000).unref();
+
+  const report = (ok, extra) => {
+    console.log("SMOKE_RESULT " + JSON.stringify({ ...extra, ok }));
+    cleanupSmokeProfile();
+    setTimeout(() => app.exit(ok ? 0 : 1), 300);
+  };
+
+  w.webContents.on("console-message", (e) => {
+    if (e.level >= 1) console.log("[renderer] " + e.message);
+  });
+  w.webContents.on("did-fail-load", (_e, code, desc) => {
+    console.log("[did-fail-load] " + code + " " + desc);
+  });
+
+  const poll = async () => {
+    try {
+      const state = await w.webContents.executeJavaScript(`(() => {
+        const V = window.Volt && window.Volt.App;
+        const vb = document.getElementById("ver-banner");
+        const restart = document.getElementById("ver-restart");
+        const dlBtn = document.getElementById("ver-download");
+        return {
+          bannerHidden: vb ? vb.hidden : "no-element",
+          pending: !!(V && V._verDesktopPending),
+          served: V ? V._verServedVersion : null,
+          restartVisible: !!restart && restart.hidden === false,
+          downloadHidden: !dlBtn || dlBtn.hidden === true,
+          countdown: !!(V && V._verTimer),
+        };
+      })()`);
+      const bannerUp = state.bannerHidden === false && state.pending && state.served === expected;
+      if (bannerUp) {
+        // downloaded mode: Restart visible, Download gone, countdown running.
+        // Stop the 15s auto-restart BEFORE it fires quitAndInstall — the feed
+        // points at a real installer and we don't want this run installing it.
+        const ok = state.restartVisible && state.downloadHidden && state.countdown &&
+          updaterEnabled && pendingUpdateVersion === expected;
+        await w.webContents.executeJavaScript(`(() => {
+          const V = window.Volt.App;
+          V._stopVerCountdown();
+          V._hideVersionBanner();
+          V._verDesktopPending = false;
+          delete V._verServed;
+          return true;
+        })()`);
+        return report(ok, { feed: { updaterEnabled, pendingVersion: pendingUpdateVersion,
+          expected, bannerShown: true, restartVisible: state.restartVisible,
+          downloadHidden: state.downloadHidden, countdown: state.countdown } });
+      }
+      if (Date.now() > deadline) {
+        return report(false, { feed: { updaterEnabled, pendingVersion: pendingUpdateVersion,
+          expected, ...state, timedOut: true } });
+      }
+      setTimeout(poll, 300);
+    } catch (e) {
+      report(false, { error: "feed probe error: " + String((e && e.message) || e) });
+    }
+  };
+  w.webContents.once("did-finish-load", () => setTimeout(poll, 1500));
 }
 
 /* ── file-change watch (renderer-driven) ─────────────────────────────
@@ -6240,13 +6786,36 @@ if (!gotLock) {
       // Accepts Uint8Array OR ArrayBuffer (the read bridge hands the renderer
       // an ArrayBuffer, and the undo snapshot keeps it as-is).
       ipcMain.handle("volt:write-file", async (_event, path, buffer) => {
-        if (typeof path !== "string" || !/\.pdf$/i.test(path)) throw new Error("not a pdf");
+        // PDF rebuilds plus the office-export formats (docx/xlsx/pptx) — the
+        // renderer-generated files a user may want persisted to disk
+        if (typeof path !== "string" || !/\.(pdf|docx|xlsx|pptx)$/i.test(path)) throw new Error("not a persistable file");
         const bytes = buffer instanceof Uint8Array ? buffer
           : (buffer instanceof ArrayBuffer ? new Uint8Array(buffer)
             : (buffer && buffer.buffer instanceof ArrayBuffer ? new Uint8Array(buffer.buffer) : null));
         if (!bytes || !bytes.length) throw new Error("no bytes");
         await writeFile(path, bytes);
         return { ok: true, size: bytes.length };
+      });
+      // volt:open-with — the renderer hands a freshly exported office file
+      // (docx/xlsx/pptx) to the OS DEFAULT handler (Word/Excel/PowerPoint):
+      // the bytes are written to a temp file and shell.openPath opens it,
+      // exactly like double-clicking the file in Explorer. The name is
+      // basename()-sanitized and extension-restricted so a renderer bug can't
+      // make the app open arbitrary paths; under --smoke the OS open is
+      // skipped (launching Word/Excel on the test machine would be rude) and
+      // only the write + path are verified.
+      ipcMain.handle("volt:open-with", async (_event, name, buffer) => {
+        if (typeof name !== "string" || !/\.(docx|xlsx|pptx)$/i.test(name)) throw new Error("not an office file");
+        const bytes = buffer instanceof Uint8Array ? buffer
+          : (buffer instanceof ArrayBuffer ? new Uint8Array(buffer)
+            : (buffer && buffer.buffer instanceof ArrayBuffer ? new Uint8Array(buffer.buffer) : null));
+        if (!bytes || !bytes.length) throw new Error("no bytes");
+        const file = join(app.getPath("temp"), "Volt-" + basename(name).replace(/[^\w.()-]/g, "_"));
+        await writeFile(file, bytes);
+        if (SMOKE) return { ok: true, path: file, smoke: true }; // no OS launch in tests
+        const err = await shell.openPath(file);
+        if (err) throw new Error("open failed: " + err);
+        return { ok: true, path: file };
       });
       ipcMain.handle("volt:watch-file", (_event, path) => {
         if (typeof path !== "string" || !/\.pdf$/i.test(path)) return { ok: false, error: "not a pdf" };
@@ -6342,14 +6911,81 @@ if (!gotLock) {
         }
       });
       ipcMain.handle("volt:stop-private-ollama", async () => stopPrivateOllama());
-      // volt:restart — the version-ready banner's Restart button. A full
+      // volt:restart — the version-ready banner's Restart button. When an
+      // auto-update has been downloaded, restarting INSTALLS it (quitAndInstall
+      // — the fresh process boots the new version directly). Otherwise a full
       // relaunch is the only way a running (possibly stale) process reaches
       // the current bundle; a reload would just re-serve the same old code.
       ipcMain.handle("volt:restart", () => {
+        if (pendingUpdateVersion) {
+          try { autoUpdater.quitAndInstall(); return { ok: true }; }
+          catch (e) { /* fall through to a plain relaunch */ }
+        }
         app.relaunch();
         app.exit(0);
         return { ok: true };
       });
+      // volt:check-for-updates — the Volt ▾ menu's "Check for updates".
+      // electron-updater is authoritative in the packaged desktop app (a
+      // release bumps the package version, which the SW comparison can't
+      // see). Maps the updater's result to a small status object; the
+      // renderer toasts accordingly. Returns { status: "disabled" } in
+      // dev/unpackaged runs so the renderer falls back to its SW check.
+      ipcMain.handle("volt:check-for-updates", async () => {
+        if (!updaterEnabled) return { status: "disabled" };
+        try {
+          const r = await autoUpdater.checkForUpdates();
+          if (!r || !r.updateInfo) return { status: "error", error: "no result from updater" };
+          const status = String(r.status || "");
+          const version = r.updateInfo.version;
+          if (status.includes("not-available")) return { status: "not-available" };
+          if (status.includes("downloaded")) return { status: "update-downloaded", version };
+          if (status.includes("available") || status.includes("downloading")) {
+            return { status: pendingUpdateVersion ? "update-downloaded" : "available", version };
+          }
+          return { status: "error", error: "unexpected updater status: " + status };
+        } catch (e) {
+          return { status: "error", error: String((e && e.message) || e) };
+        }
+      });
+      // volt:update-prefs — the renderer pushes its update preferences (and
+      // its NetworkInformation-based metered read, which main can't see).
+      // Applied live: checkOnStartup gates the startup check, allowDownload
+      // flips autoUpdater.autoDownload so a metered connection + the 'off'
+      // setting means Volt detects but never silently downloads.
+      ipcMain.handle("volt:update-prefs", (_event, p) => {
+        if (!p || typeof p !== "object") return { ok: false };
+        updatePrefs.checkOnStartup = p.checkOnStartup !== false;
+        updatePrefs.allowDownload = p.allowDownload !== false;
+        if (updaterEnabled) {
+          try { autoUpdater.autoDownload = updatePrefs.allowDownload; } catch (e) { /* non-fatal */ }
+        }
+        return { ok: true };
+      });
+      // volt:download-update — the 'available' banner's Download button
+      // (shown when background downloads are suppressed). Starts the explicit
+      // download; the update-downloaded event then drives the normal
+      // restart-banner flow. Returns { ok:false, error } on failure so the
+      // button can re-arm and the failure is surfaced.
+      ipcMain.handle("volt:download-update", async () => {
+        if (!updaterEnabled) return { ok: false, error: "updater disabled" };
+        try {
+          await autoUpdater.downloadUpdate();
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
+      });
+      // volt:app-info — the renderer needs a few main-process facts the
+      // sandboxed preload can't derive (is the app a packaged build? which
+      // version is installed?). The SW-based version check is suppressed in
+      // packaged builds — those get their updates from electron-updater —
+      // so the renderer must KNOW it's packaged before it decides.
+      ipcMain.handle("volt:app-info", () => ({
+        version: app.getVersion(),
+        isPackaged: app.isPackaged,
+        updaterEnabled,
+      }));
       // volt:quit — the Volt ▾ menu's Exit item (desktop only; the item is
       // hidden in the browser where there is nothing to quit)
       ipcMain.handle("volt:quit", () => {
@@ -6388,6 +7024,7 @@ if (!gotLock) {
       // preload there is no volt:renderer-ready IPC to flush the queue
       if (!SMOKE_BROWSER) queueFile(findPdfArgv(process.argv));
       scheduleVendorAutoUpdate(win); // background vendor check (once/day)
+      initAppAutoUpdater(); // app self-update (packaged builds only)
     } catch (e) {
       console.error("Volt failed to start: " + ((e && e.stack) || e));
       app.exit(1);

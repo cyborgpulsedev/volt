@@ -31,6 +31,7 @@
     rendered: new Map(),    // pageNum -> {wrap, canvas, ctx, textLayer, overlay, viewport}
     thumbRendered: new Set(),
     _keepAllRendered: false, // a Ctrl+A+A whole-document selection pins the full render
+    _wheelAnchor: null,     // {pageNum, x, y, clientX, clientY} — pending Ctrl+wheel zoom anchor
     search: null,           // {query, results, current}
     pendingRender: new Map(),
     _pendingBackup: null,   // parsed backup JSON awaiting the right document to open
@@ -44,6 +45,7 @@
     // builds), the selected plan indices, and caches so re-rendering the plan
     // after each edit doesn't re-rasterize thumbnails
     _pagePlan: null,        // [{kind:"doc",oldPage} | {kind:"blank",w,h} | {kind:"other",bytes,page,name}]
+    _pagePlanDoc: null,     // the currentDoc this plan was built for (stale-plan guard)
     _pageSel: null,         // Set<plan index>
     _pageSelAnchor: null,   // plan index anchoring Shift+click range selection
     _pageSelBase: null,     // fixed end of an active Shift+arrow sequence (Explorer-style)
@@ -114,8 +116,10 @@
         formModal: $("form-modal"), formType: $("form-type"), formName: $("form-name"), formValue: $("form-value"),
         formValueField: $("form-value-field"), formCancel: $("form-cancel"), formPlace: $("form-place"),
         btnThemeLight: $("btn-theme-light"), btnThemeDark: $("btn-theme-dark"),
-        verBanner: $("ver-banner"), verBannerText: $("ver-banner-text"), verRestart: $("ver-restart"), verCancel: $("ver-cancel"), verDismiss: $("ver-dismiss"), verTip: $("ver-tip"),
+        verBanner: $("ver-banner"), verBannerText: $("ver-banner-text"), verRestart: $("ver-restart"), verCancel: $("ver-cancel"), verDownload: $("ver-download"), verDismiss: $("ver-dismiss"), verTip: $("ver-tip"),
+        setUpdateStartup: $("set-update-startup"), setUpdateMetered: $("set-update-metered"),
         btnOcr: $("btn-ocr"), btnOcrLang: $("btn-ocr-lang"), ocrLangCur: $("ocr-lang-cur"),
+        btnSig: $("btn-sig"), btnDate: $("btn-date"), btnForm: $("btn-form"),
         ocrLangPop: $("ocr-lang-pop"), ocrLangSearch: $("ocr-lang-search"), ocrLangList: $("ocr-lang-list"),
         btnOcrLayer: $("btn-ocr-layer"), ocrPrefer: $("ocr-prefer"),
         btnReadaloud: $("btn-readaloud"),
@@ -163,10 +167,14 @@
         notePopover: $("note-popover"), noteInput: $("note-input"),
         noteSave: $("note-save"), noteDelete: $("note-delete"), noteCancel: $("note-cancel"),
         areaMenu: $("area-menu"), areaMenuDelete: $("area-menu-delete"), areaMenuDup: $("area-menu-dup"), areaMenuClose: $("area-menu-close"),
+        textEditPop: $("text-edit-pop"), textEditInput: $("text-edit-input"), textEditFont: $("text-edit-font"),
+        textEditBold: $("text-edit-bold"), textEditItalic: $("text-edit-italic"),
+        textEditSize: $("text-edit-size"), textEditColor: $("text-edit-color"),
+        textEditHint: $("text-edit-hint"), textEditCancel: $("text-edit-cancel"), textEditApply: $("text-edit-apply"),
         urlModal: $("url-modal"), urlModalTitle: $("url-modal-title"), urlInput: $("url-input"), urlGo: $("url-go"), urlCancel: $("url-cancel"),
         btnRestoreUrlEmpty: $("btn-restore-url-empty"),
         reloadBanner: $("reload-banner"), reloadNow: $("reload-now"), reloadDismiss: $("reload-dismiss"),
-        exportModal: $("export-modal"), exportClose: $("export-close"),
+        exportModal: $("export-modal"), exportClose: $("export-close"), exportSelNote: $("export-sel-note"),
         exportOcrTxt: $("export-ocr-txt"), exportOcrMd: $("export-ocr-md"),
         expAnn: $("exp-ann"), expAi: $("exp-ai"), expChat: $("exp-chat"),
         restoreModal: $("restore-modal"), restoreMsg: $("restore-msg"),
@@ -238,6 +246,42 @@
         if (global.voltDesktop.onFileChanged) {
           global.voltDesktop.onFileChanged((d) => this._fileChanged(d));
         }
+        // desktop app self-update: electron-updater finished downloading a
+        // newer release in the background — surface the version banner (its
+        // Restart button installs it; the countdown/Cancel/never-auto-restart
+        // settings all apply). The SW-based check is dormant while one is
+        // pending so it can't hide this banner.
+        if (global.voltDesktop.onUpdateDownloaded) {
+          global.voltDesktop.onUpdateDownloaded((d) => this._onDesktopUpdateDownloaded(d));
+        }
+        // an update is AVAILABLE but background downloads are suppressed
+        // (metered connection + the 'off' preference) — offer the download
+        // instead of silently skipping it
+        if (global.voltDesktop.onUpdateAvailable) {
+          global.voltDesktop.onUpdateAvailable((d) => {
+            const v = d && d.version;
+            if (v) this._showUpdateAvailable(String(v));
+          });
+        }
+        // packaged builds get their updates from electron-updater, so the
+        // SW-based version check is suppressed there (see _checkNewVersion).
+        // Ask once at init — a few ms, well before the first check at 4s.
+        if (global.voltDesktop.appInfo) {
+          global.voltDesktop.appInfo().then((i) => {
+            this._packaged = !!(i && i.isPackaged);
+          }).catch(() => {});
+        }
+        // push update preferences (check-on-startup, metered-download) to main
+        // and re-push whenever the browser's connectivity read changes — the
+        // app then flips its background-download policy live (moving off a
+        // metered network re-enables silent updates without a restart)
+        this._pushUpdatePrefs();
+        try {
+          const conn = navigator.connection;
+          if (conn && typeof conn.addEventListener === "function") {
+            conn.addEventListener("change", () => this._pushUpdatePrefs());
+          }
+        } catch (e) { /* never break init */ }
         global.voltDesktop.ready(); // unblock any file queued at launch
       }
 
@@ -407,6 +451,19 @@
         const hasOcr = !!(Volt.OCR && Volt.OCR.available && Volt.OCR.hasText && Volt.OCR.hasText());
         el.exportOcrTxt.hidden = !hasOcr;
         el.exportOcrMd.hidden = !hasOcr;
+        // the office exports cover the Pages manager's live selection when
+        // one exists (a selection made in the manager survives an Escape-close
+        // so it can drive an export); the note makes that visible before the
+        // user clicks an export item
+        const selPages = this._pagesSelectedForExport();
+        if (selPages) {
+          el.exportSelNote.textContent = "Office exports will cover " + this._officeExportScope(selPages) +
+            (selPages.skipped ? " — inserted pages can't be exported until applied" : "") +
+            ". Select differently in the Pages manager to change this.";
+          el.exportSelNote.hidden = false;
+        } else {
+          el.exportSelNote.hidden = true;
+        }
         this._openModal(el.exportModal);
       });
       el.exportClose.addEventListener("click", () => this._closeModal(el.exportModal));
@@ -439,6 +496,12 @@
           this._stopVerCountdown();
         });
       }
+      // the 'available' banner's Download button (shown when background
+      // downloads are suppressed — metered connection + pref off). Kicks off
+      // the explicit download; update-downloaded then takes over the banner.
+      if (el.verDownload) {
+        el.verDownload.addEventListener("click", () => this._downloadUpdate());
+      }
       if (el.verDismiss) {
         el.verDismiss.addEventListener("click", () => {
           const served = this._verServed;
@@ -468,6 +531,12 @@
        yet → nothing installed → silent skip. Never throws. */
     async _checkNewVersion() {
       try {
+        // packaged desktop builds get their updates from electron-updater, and
+        // a downloaded update is already surfacing the banner — the SW-based
+        // check would either never fire (the asar bundle can't change under
+        // the running app) or, right after an update installs, show a stale
+        // "new version" banner that makes the user restart a second time.
+        if (this._verDesktopPending || this._packaged) return;
         if (!("serviceWorker" in navigator) || !("caches" in window)) return;
         const sw = await fetch("sw.js?_t=" + Date.now())
           .then((r) => (r.ok ? r.text() : "")).catch(() => "");
@@ -496,6 +565,10 @@
       if (!el.verBanner) return;
       if (el.verBanner.hidden === false && this._verTimer) return; // already counting down — don't reset it
       el.verBanner.hidden = false;
+      // if the 'available' mode was showing (Download instead of Restart),
+      // switch back to the restart mode — the download just completed
+      if (el.verDownload) el.verDownload.hidden = true;
+      if (el.verRestart) el.verRestart.hidden = false;
       // kick off the what's-new tooltip in the background — never blocks the
       // banner or the app; an empty result keeps the tooltip hidden.
       this._loadVerChangelog();
@@ -643,9 +716,11 @@
     _stopVerCountdown() {
       if (this._verTimer) { clearInterval(this._verTimer); this._verTimer = null; }
       const el = this.elements;
+      // the canonical 'downloaded' mode: Restart visible, Download/Cancel gone
       if (el.verBannerText) el.verBannerText.textContent = "Volt updated — restart to apply the new version";
-      if (el.verRestart) el.verRestart.textContent = "Restart now";
+      if (el.verRestart) { el.verRestart.hidden = false; el.verRestart.textContent = "Restart now"; }
       if (el.verCancel) el.verCancel.hidden = true;
+      if (el.verDownload) el.verDownload.hidden = true;
     },
 
     /** The banner's Restart button: desktop relaunches the whole process
@@ -718,11 +793,135 @@
       this._openModal(el.aboutModal);
     },
 
+    /* ── desktop auto-update banner (electron-updater) ────────
+       main told us a newer release finished downloading. Show the same
+       version banner the SW path uses — Restart installs it (volt:restart
+       routes to quitAndInstall), the 15s auto-restart countdown, Cancel
+       and 'never auto-restart' all apply, and the what's-new tooltip diffs
+       the changelog. While one is pending the SW check is dormant so it
+       can't hide the banner mid-update. Never throws. */
+    _onDesktopUpdateDownloaded(d) {
+      const version = (d && /^\d+\.\d+\.\d+$/.test(String(d.version))) ? String(d.version) : null;
+      if (!version) return;
+      this._verDesktopPending = true;
+      this._showVersionBanner("volt-update-" + version, version);
+    },
+
+    /* ── update available (downloads suppressed) ──────────────
+       electron-updater found a newer release but background downloads are
+       off (metered connection + the preference). Show the banner in a
+       'Download' mode: no countdown, a Download button, and the same
+       what's-new tooltip + per-version dismiss as the downloaded banner.
+       When the download finishes, update-downloaded replaces it with the
+       normal restart banner. Never throws. */
+    _showUpdateAvailable(version) {
+      this._verServed = "volt-update-" + version;
+      this._verServedVersion = version;
+      try {
+        if (localStorage.getItem("volt:ver:dismiss:" + this._verServed)) return;
+      } catch (e) { /* ignore */ }
+      const el = this.elements;
+      if (!el.verBanner) return;
+      this._stopVerCountdown(); // resets text/buttons — overridden just below
+      el.verBanner.hidden = false;
+      if (el.verBannerText) el.verBannerText.textContent = "Update v" + version + " is available";
+      if (el.verRestart) el.verRestart.hidden = true;
+      if (el.verCancel) el.verCancel.hidden = true;
+      if (el.verDownload) {
+        el.verDownload.hidden = false;
+        el.verDownload.disabled = false;
+        el.verDownload.textContent = "Download";
+      }
+      this._loadVerChangelog(); // what's-new tooltip, like the downloaded banner
+    },
+
+    /** The 'available' banner's Download button: ask main to fetch the
+        update explicitly. On success the update-downloaded event swaps the
+        banner to the restart mode; on failure the button re-arms and the
+        failure is toasted. */
+    async _downloadUpdate() {
+      const el = this.elements;
+      if (el.verDownload) { el.verDownload.disabled = true; el.verDownload.textContent = "Downloading…"; }
+      try {
+        if (global.voltDesktop && typeof global.voltDesktop.downloadUpdate === "function") {
+          const r = await global.voltDesktop.downloadUpdate();
+          if (!r || !r.ok) {
+            if (el.verDownload) { el.verDownload.disabled = false; el.verDownload.textContent = "Download"; }
+            this.toast("Update download failed" + (r && r.error ? ": " + r.error : ""), "error");
+            return;
+          }
+        }
+      } catch (e) {
+        if (el.verDownload) { el.verDownload.disabled = false; el.verDownload.textContent = "Download"; }
+        this.toast("Update download failed", "error");
+      }
+    },
+
+    /* ── update preferences (desktop) ────────────────────────
+       Push check-on-startup + the metered-download decision to main, which
+       owns the actual updater. The metered read comes from the browser's
+       NetworkInformation API — the only place it's visible — so the renderer
+       decides and main just applies autoUpdater.autoDownload. Re-pushed on
+       settings save and on connection change. Never throws. */
+    _pushUpdatePrefs() {
+      if (!global.voltDesktop || typeof global.voltDesktop.updatePrefs !== "function") return;
+      const ai = Volt.AI && Volt.AI.settings;
+      const checkOnStartup = !ai || ai.updateCheckStartup !== false;
+      const downloadOnMetered = !!(ai && ai.updateDownloadMetered);
+      const allowDownload = !this._isMeteredConnection() || downloadOnMetered;
+      this._allowDownload = allowDownload;
+      global.voltDesktop.updatePrefs({ checkOnStartup, allowDownload }).catch(() => {});
+    },
+
+    /** True when the current connection looks metered or slow: the OS-level
+        'data saver' flag, a slow effective type, or a very low downlink —
+        approximations, since Chromium can't read Windows' per-adapter
+        metered flag. Unknown → false (assume unmetered). */
+    _isMeteredConnection() {
+      try {
+        const c = navigator.connection;
+        if (!c) return false;
+        if (c.saveData === true) return true;
+        const t = String(c.effectiveType || "").toLowerCase();
+        if (["slow-2g", "2g", "3g"].includes(t)) return true;
+        if (typeof c.downlink === "number" && c.downlink > 0 && c.downlink < 0.5) return true;
+        return false;
+      } catch (e) { return false; }
+    },
+
     /* ── Check for updates (Volt ▾) ───────────────────────────
-       Runs the same served-vs-installed sw.js comparison the banner uses and
-       reports the outcome in a toast. A pending update surfaces the banner;
-       a fresh bundle says so. */
+       Desktop: electron-updater is authoritative (a release bumps the
+       package version, invisible to the SW comparison) — ask it and toast
+       the outcome; when it's disabled (dev/unpackaged) fall through to the
+       SW check below. Browser/PWA: the served-vs-installed sw.js comparison;
+       a pending update surfaces the banner, a fresh bundle says so. */
     async _checkForUpdates() {
+      if (global.voltDesktop && typeof global.voltDesktop.checkForUpdates === "function") {
+        try {
+          const r = await global.voltDesktop.checkForUpdates();
+          if (r && r.status !== "disabled") {
+            if (r.status === "available" || r.status === "downloading") {
+              if (this._allowDownload === false) {
+                // background downloads suppressed — offer the download instead
+                this._showUpdateAvailable(r.version);
+              } else {
+                this.toast("Update " + (r.version || "") + " is downloading — you'll be asked to restart", "ok");
+              }
+            } else if (r.status === "update-downloaded") {
+              this.toast("Update " + (r.version || "") + " is ready — restart to install it", "ok");
+            } else if (r.status === "not-available") {
+              this.toast("Volt is up to date" + (window.__VOLT_VERSION ? " (v" + window.__VOLT_VERSION + ")" : ""), "ok");
+            } else if (r.status === "error") {
+              this.toast("Update check failed" + (r.error ? ": " + r.error : ""), "error");
+            }
+            return;
+          }
+          // disabled (dev) — fall through to the SW comparison
+        } catch (e) {
+          this.toast("Update check failed", "error");
+          return;
+        }
+      }
       const before = this._verServed || null;
       await this._checkNewVersion();
       const after = this._verServed || null;
@@ -1517,6 +1716,7 @@
       // leak across opens — e.g. an Escape-close leaves the old plan behind)
       this._resetPageManager(); // destroys any prior inserted-file docs too
       this._pagePlan = Array.from({ length: this.currentDoc.numPages }, (_, i) => ({ kind: "doc", oldPage: i + 1 }));
+      this._pagePlanDoc = this.currentDoc; // the plan belongs to THIS document
       this._pageSel = new Set();
       el.pagesModalSub.textContent = this.currentDocInfo.name + " — " + this.currentDoc.numPages + " pages";
       this._hidePagesInsertForm();
@@ -1527,6 +1727,7 @@
 
     _resetPageManager() {
       this._pagePlan = null;
+      this._pagePlanDoc = null;
       this._pageSel = null;
       this._pageSelAnchor = null; // a stale anchor must never leak across sessions
       this._disarmPageDeleteConfirm(); // a stale armed Delete must never survive a reopen
@@ -2185,6 +2386,75 @@
     },
 
     /** Build + download a NEW PDF from just the selected pages (no doc change). */
+    /** The actual document pages (1-based, in the plan's order) covered by the
+        Pages manager's current selection — for the office exports (docx/xlsx/
+        pptx/tsv), which read the OPEN document rather than the staged plan.
+        Returns { pages, skipped } or null (no live selection / covers the
+        whole document / belongs to a different document).
+        - The plan is kept after an Escape-close, so a selection made in the
+          manager can drive an export afterwards; it is cleared by Cancel,
+          Apply, or reopening the manager, and _pagePlanDoc guards against a
+          selection left over from a DIFFERENT document (a normal open doesn't
+          reset the manager).
+        - Staged insertions (blank / from-other-PDF pages) don't exist in the
+          open document, so they are counted in `skipped` and dropped; a
+          selection with nothing exportable returns null (whole document). */
+    _pagesSelectedForExport() {
+      const plan = this._pagePlan, sel = this._pageSel;
+      if (!Array.isArray(plan) || !plan.length || !sel || !sel.size) return null;
+      if (this._pagePlanDoc !== this.currentDoc) return null; // stale plan
+      const n = this.currentDoc ? this.currentDoc.numPages : 0;
+      if (!n) return null;
+      const pages = [], seen = new Set();
+      let skipped = 0;
+      for (let i = 0; i < plan.length; i++) {
+        if (!sel.has(i)) continue;
+        const e = plan[i];
+        if (e && e.kind === "doc" && e.oldPage >= 1 && e.oldPage <= n) {
+          if (!seen.has(e.oldPage)) { seen.add(e.oldPage); pages.push(e.oldPage); }
+        } else {
+          skipped++; // staged insertion — not in the open document
+        }
+      }
+      if (!pages.length) return null;
+      // a whole-document selection is just the normal export — no filter
+      if (pages.length === n && pages.slice().sort((a, b) => a - b).every((p, i) => p === i + 1)) return null;
+      return { pages, skipped };
+    },
+
+    /** Human label for an export scope: "" for the whole document (no page
+        list needed — the toast stays as before), "pages 2, 3" for a live
+        Pages-manager selection, plus a note when staged insertions had to be
+        skipped. error = true swaps the whole-doc label for the error toasts
+        ("in the whole document"). */
+    _officeExportScope(sel, error) {
+      if (!sel) return error ? "the whole document" : "";
+      let s = "pages " + sel.pages.join(", ");
+      if (sel.skipped) s += " (" + sel.skipped + " inserted page" + (sel.skipped === 1 ? "" : "s") + " not in the open file)";
+      return s;
+    },
+
+    /** 'Open with…' toast action for a freshly exported office file: hands the
+        bytes to the OS default handler (Word/Excel/PowerPoint) through the
+        desktop bridge, which writes them to a temp file and opens it — the
+        same as double-clicking the file in Explorer. Returns null outside the
+        desktop app, so the PWA keeps the plain toast (no shell to open with). */
+    _openWithAction(bytes, fileName) {
+      if (!(global.voltDesktop && typeof global.voltDesktop.openWith === "function")) return null;
+      return {
+        label: "Open with…",
+        onClick: async () => {
+          try {
+            const r = await global.voltDesktop.openWith(fileName, bytes);
+            if (r && r.ok) this.toast("Opened " + fileName + " with your default handler", "ok");
+            else this.toast("Couldn't open " + fileName + " — no default handler for it?", "error");
+          } catch (e) {
+            this.toast("Couldn't open " + fileName + " — " + ((e && e.message) || e), "error");
+          }
+        },
+      };
+    },
+
     async _exportSelectedPages() {
       const sel = this._pageSel ? [...this._pageSel].sort((a, b) => a - b) : [];
       if (!sel.length) { this.toast("Select pages first"); return; }
@@ -2958,12 +3228,60 @@
     _wireScroll() {
       const el = this.elements;
       el.scroller.addEventListener("scroll", Utils.throttle(() => this._onScroll(), 50), { passive: true });
+      // Ctrl+wheel / Cmd+wheel zooms around the cursor, like every PDF reader:
+      // the PDF point under the pointer is captured, the zoom applies, and the
+      // scroll is re-anchored so that point stays under the cursor when its
+      // page finishes re-rendering (pages re-render async after a zoom). Plain
+      // wheel keeps scrolling as usual. Never passive — preventDefault keeps
+      // the browser from also zooming the whole page.
+      el.scroller.addEventListener("wheel", (e) => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        if (!this.currentDoc || !this.pageLayout.length) return;
+        e.preventDefault();
+        const anchor = this._clientToPdfAnchor(e.clientX, e.clientY);
+        if (anchor) this._wheelAnchor = { ...anchor, clientX: e.clientX, clientY: e.clientY };
+        this.setZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+      }, { passive: false });
       window.addEventListener("resize", Utils.debounce(() => {
         if (!this.currentDoc) return;
         if (this.zoomMode !== "custom") this._applyFitZoom();
         this._layoutPages();
         this._onScroll();
       }, 150));
+    },
+
+    /** The PDF point (page + page-space coords) under a client-space cursor,
+        via the rendered page that contains it. Returns null over blank
+        space — the wheel handler then falls back to center-anchored zoom. */
+    _clientToPdfAnchor(cx, cy) {
+      for (const [n, r] of this.rendered) {
+        const wr = r.wrap.getBoundingClientRect();
+        if (cx >= wr.left && cx <= wr.right && cy >= wr.top && cy <= wr.bottom) {
+          try {
+            const pt = r.viewport.convertToPdfPoint(cx - wr.left, cy - wr.top);
+            return { pageNum: n, x: pt[0], y: pt[1] };
+          } catch (e) { return null; }
+        }
+      }
+      return null;
+    },
+
+    /** Called when the anchor page's new wrap lands after a wheel-zoom render:
+        scroll so the captured PDF point returns to the cursor's position. */
+    _applyWheelAnchor(pageNum) {
+      const a = this._wheelAnchor;
+      if (!a || a.pageNum !== pageNum) return;
+      this._wheelAnchor = null;
+      const r = this.rendered.get(pageNum);
+      if (!r) return;
+      try {
+        const pt = r.viewport.convertToViewportPoint(a.x, a.y);
+        const scroller = this.elements.scroller;
+        const srect = scroller.getBoundingClientRect();
+        const wr = r.wrap.getBoundingClientRect();
+        scroller.scrollLeft += wr.left + pt[0] - (a.clientX - srect.left);
+        scroller.scrollTop += wr.top + pt[1] - (a.clientY - srect.top);
+      } catch (e) { /* anchoring is best-effort — never break the render */ }
     },
 
     _onScroll() {
@@ -3458,13 +3776,18 @@
         const ctx = canvas.getContext("2d");
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
-        // abandon if the page was disposed while rendering (zoom change / scroll-away / new doc)
-        if (!wrap.isConnected) { this.pendingRender.delete(pageNum); return; }
-        await this._buildTextLayer(page, vp, textLayer, pageNum);
-        if (!wrap.isConnected) { this.pendingRender.delete(pageNum); return; }
-
+        // register the page BEFORE building the text layer — _buildTextLayer
+        // re-applies text edits, whose geometry helpers (_pdfToLocal /
+        // _spanBboxPdf) resolve the page's viewport through this.rendered,
+        // which is otherwise empty mid re-render (zoom / rotate / open)
         this.rendered.set(pageNum, { wrap, canvas, textLayer, overlay, viewport: vp });
+        // abandon if the page was disposed while rendering (zoom change / scroll-away / new doc)
+        if (!wrap.isConnected) { this.pendingRender.delete(pageNum); this.rendered.delete(pageNum); return; }
+        await this._buildTextLayer(page, vp, textLayer, pageNum);
+        if (!wrap.isConnected) { this.pendingRender.delete(pageNum); this.rendered.delete(pageNum); return; }
+
         this._updatePagePosition(wrap, pageNum);
+        this._applyWheelAnchor(pageNum); // re-anchor the Ctrl+wheel zoom to the cursor
         this._drawOverlay(wrap, pageNum);
         if (Volt.Ann && Volt.Ann.refreshSelection) Volt.Ann.refreshSelection(); // re-glue the editing box after re-render
         this.pendingRender.delete(pageNum);
@@ -3530,6 +3853,13 @@
       const textContent = await page.getTextContent();
       const layer = new pdfjsLib.TextLayer({ textContentSource: textContent, container, viewport: vp });
       await layer.render();
+      // text editing support: remember the page's textContent and map each
+      // span to its font (PostScript name via page.commonObjs) + size, then
+      // re-apply any stored text edits — pdf.js rebuilds the spans
+      // deterministically per page, so edits survive zoom / scroll / rotate.
+      container._voltTC = textContent;
+      if (Volt.Ann && Volt.Ann.annotateLayerFonts) Volt.Ann.annotateLayerFonts(page, container, textContent);
+      if (Volt.Ann && Volt.Ann.applyTextEditsToLayer) Volt.Ann.applyTextEditsToLayer(container, pageNum);
       // an image-only (scanned) page renders NO spans — overlay the stored OCR
       // words as real selectable text, positioned from their PDF-space bboxes
       // through the page's current viewport. Runs on every render (zoom,
@@ -3571,7 +3901,21 @@
         OCR-first layer preference flips, so pages rendered under the old
         mode switch immediately (embed → OCR or the reverse). Rebuilds only
         the text layer, never the page canvas. */
-    async rebuildTextLayers() {
+    /** Serialize text-layer rebuilds. RebuildTextLayers is fire-and-forget
+        from _syncTextEdits (an AI text edit + immediate undo) and the OCR
+        layer-preference flips — two CONCURRENT passes interleave their
+        per-page layer.innerHTML = "" with pdf.js's async span build, and one
+        pass's spans can land after the other pass wiped the layer, leaving a
+        page with DOUBLED spans (the text visibly overlapping). Each call
+        waits for the previous pass to settle and then runs again, so the
+        layers always converge on the latest annotation state. */
+    _rebuildChain: null,
+    rebuildTextLayers() {
+      const run = () => this._doRebuildTextLayers();
+      this._rebuildChain = (this._rebuildChain || Promise.resolve()).then(run, run);
+      return this._rebuildChain;
+    },
+    async _doRebuildTextLayers() {
       const doc = this.currentDoc;
       if (!doc) return;
       const pages = [...this.rendered.entries()];
@@ -4310,6 +4654,50 @@
             Utils.download(new Blob([Volt.OCR.toMarkdown()], { type: "text/markdown" }), base + "-ocr.md");
             this.toast("OCR text exported (Markdown)", "ok");
           }
+        } else if (kind === "docx") {
+          // Word / Google Docs / LibreOffice: the document's text (with
+          // text-edit annotations applied), detected tables as real tables,
+          // and embedded pictures as images — collected page by page. When
+          // the Pages manager has a live selection, only those pages are
+          // collected; otherwise the whole document (as before).
+          const sel = this._pagesSelectedForExport();
+          this.toast("Preparing Word document…", "ok");
+          const doc = await global.OfficeExport.collect(this, sel && sel.pages);
+          const bytes = global.OfficeExport.docx(doc);
+          Utils.download(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), base + ".docx");
+          this.toast("Word document exported" + (sel ? " — " + this._officeExportScope(sel) : "") + " · opens in Word, Google Docs & LibreOffice", "ok", false, this._openWithAction(bytes, base + ".docx"));
+        } else if (kind === "xlsx") {
+          const sel = this._pagesSelectedForExport();
+          const tables = await global.OfficeExport.collectTables(this, sel && sel.pages);
+          if (!tables.length) {
+            this.toast("No tables detected in " + this._officeExportScope(sel, true) + " — try a table-heavy PDF", "error");
+            return;
+          }
+          const bytes = global.OfficeExport.xlsx({ sheets: tables.map((t, i) => ({ name: "Table " + (i + 1) + (t.page ? " (p." + t.page + ")" : ""), rows: t.rows })) });
+          Utils.download(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), base + ".xlsx");
+          this.toast("Spreadsheet exported — " + tables.length + " table" + (tables.length === 1 ? "" : "s") + (sel ? " from " + this._officeExportScope(sel) : "") + " · opens in Excel, Google Sheets & LibreOffice", "ok", false, this._openWithAction(bytes, base + ".xlsx"));
+        } else if (kind === "pptx") {
+          // PowerPoint / Google Slides / LibreOffice: the document as a
+          // deck — a title slide, each page's prose, then one slide per
+          // detected table and one per picture (same collectors as docx)
+          const sel = this._pagesSelectedForExport();
+          this.toast("Preparing PowerPoint…", "ok");
+          const doc = await global.OfficeExport.collect(this, sel && sel.pages);
+          const bytes = global.OfficeExport.pptx(doc);
+          Utils.download(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.presentationml.presentation" }), base + ".pptx");
+          this.toast("PowerPoint exported" + (sel ? " — " + this._officeExportScope(sel) : " — tables & pictures as slides") + " · opens in PowerPoint, Google Slides & LibreOffice", "ok", false, this._openWithAction(bytes, base + ".pptx"));
+        } else if (kind === "tsv") {
+          const sel = this._pagesSelectedForExport();
+          const tables = await global.OfficeExport.collectTables(this, sel && sel.pages);
+          if (!tables.length) {
+            this.toast("No tables detected in " + this._officeExportScope(sel, true) + " — nothing to copy", "error");
+            return;
+          }
+          const tsv = global.OfficeExport.tsv(tables[0].rows);
+          const ok = await this._writeClipboard(tsv);
+          this.toast(ok
+            ? "First table copied as TSV" + (sel ? " (" + this._officeExportScope(sel) + ")" : "") + " — paste into Google Sheets or Excel"
+            : "Copy failed — clipboard unavailable", ok ? "ok" : "error");
         } else if (kind === "json") {
           // the backup carries exactly the layers the dialog's checkboxes
           // selected (annotations are always included; expAnn is locked), and
@@ -5036,5 +5424,9 @@
 
 
 
+
+// volt:artifact-regression-marker (harmless trailing comment)
+
+// volt:artifact-regression-marker (harmless trailing comment)
 
 // volt:artifact-regression-marker (harmless trailing comment)

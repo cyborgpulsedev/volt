@@ -383,10 +383,12 @@
         const c = Math.min(AI_W_MAX, Math.max(AI_W_MIN, w));
         applyAiW(c);
         try { localStorage.setItem(AI_W_KEY, String(c)); } catch { /* private mode */ }
+        this._reflowAfterPaneResize();
       };
       const resetAiW = () => {
         document.documentElement.style.removeProperty("--ai-w");
         try { localStorage.removeItem(AI_W_KEY); } catch { /* private mode */ }
+        this._reflowAfterPaneResize();
       };
       try {
         const saved = parseFloat(localStorage.getItem(AI_W_KEY));
@@ -423,6 +425,65 @@
           } else if (e.key === "Home") {
             e.preventDefault();
             resetAiW();
+          }
+        });
+      }
+
+      // ── Sidebar width — same contract as the AI panel ─────────────────
+      // Handle on the sidebar's RIGHT edge, so the arrows read naturally
+      // (Right grows, Left shrinks) — the mirror of the AI panel's mapping.
+      // Persisted per user; double-click / Home resets. --sidebar-w drives
+      // both the width and the collapse slide, so one value stays in sync.
+      const SB_W_KEY = "volt:sidebar:w";
+      const SB_W_MIN = 150, SB_W_MAX = 520;
+      const applySbW = (w) => {
+        document.documentElement.style.setProperty("--sidebar-w", Math.round(w) + "px");
+      };
+      const setSbW = (w) => {
+        const c = Math.min(SB_W_MAX, Math.max(SB_W_MIN, w));
+        applySbW(c);
+        try { localStorage.setItem(SB_W_KEY, String(c)); } catch { /* private mode */ }
+        this._reflowAfterPaneResize();
+      };
+      const resetSbW = () => {
+        document.documentElement.style.removeProperty("--sidebar-w");
+        try { localStorage.removeItem(SB_W_KEY); } catch { /* private mode */ }
+        this._reflowAfterPaneResize();
+      };
+      try {
+        const saved = parseFloat(localStorage.getItem(SB_W_KEY));
+        if (saved && saved >= SB_W_MIN && saved <= SB_W_MAX) applySbW(saved);
+      } catch { /* private mode */ }
+      const sbResize = document.getElementById("sidebar-resize");
+      if (sbResize) {
+        let sbDrag = null;
+        sbResize.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          sbDrag = { startX: e.clientX, startW: el.sidebar ? el.sidebar.getBoundingClientRect().width : 224 };
+          sbResize.classList.add("active");
+          document.body.classList.add("resizing-sidebar");
+        });
+        window.addEventListener("mousemove", (e) => {
+          if (!sbDrag) return;
+          // right-edge drag: moving right grows, moving left shrinks
+          setSbW(sbDrag.startW + (e.clientX - sbDrag.startX));
+        });
+        window.addEventListener("mouseup", () => {
+          if (!sbDrag) return;
+          sbDrag = null;
+          sbResize.classList.remove("active");
+          document.body.classList.remove("resizing-sidebar");
+        });
+        sbResize.addEventListener("dblclick", (e) => { e.preventDefault(); resetSbW(); });
+        sbResize.addEventListener("keydown", (e) => {
+          if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            e.preventDefault();
+            const cur = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-w")) || 224;
+            setSbW(cur + (e.key === "ArrowRight" ? 20 : -20));
+          } else if (e.key === "Home") {
+            e.preventDefault();
+            resetSbW();
           }
         });
       }
@@ -3951,6 +4012,23 @@
       this.zoomMode = "fit-page";
       this._applyFitZoom();
     },
+    /** A pane resize changes the viewer's available width exactly like a
+        window resize does — in fit-width/fit-page the zoom must recompute or
+        the page renders at a stale scale (and every annotation overlay is then
+        drawn against a viewport that no longer matches the DOM box). Same body
+        as the window "resize" handler, called from the sidebar/AI drag. */
+    _reflowAfterPaneResize() {
+      if (!this.currentDoc) return;
+      if (this._paneReflow) return; // coalesce to one reflow per frame during a drag
+      this._paneReflow = requestAnimationFrame(() => {
+        this._paneReflow = null;
+        if (!this.currentDoc) return;
+        if (this.zoomMode !== "custom") this._applyFitZoom();
+        this._layoutPages();
+        this._onScroll();
+      });
+    },
+
     _applyFitZoom() {
       const scroller = this.elements.scroller;
       const pad = 60;

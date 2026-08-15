@@ -2236,8 +2236,45 @@ function runSmokeTest(w) {
               Ann._afterChange();
               Ann.setMode("select");
               lineSel.cleaned = true;
+              // ── overlay CSS-BOX contract (the devicePixelRatio regression) ──
+              // NOTE: this whole block is injected via a template literal —
+              // never use a backtick here, not even inside a comment.
+              // A <canvas> is a replaced element: "inset: 0" positions it but
+              // cannot stretch it, so with width/height:auto its CSS size is
+              // whatever the width/height ATTRIBUTES say. renderOverlay sets the
+              // attributes to viewport × dpr, so on any scaled display (Windows
+              // 125%/150% → dpr 1.25/1.5) the overlay's CSS box came out dpr
+              // times too large while ctx.setTransform(dpr) drew into it 1:1 —
+              // every mark landed dpr× further from the page's top-left than the
+              // text it marked (a 1.5 display pushed a highlight ~85px right and
+              // ~154px down mid-page, worsening down the page). The invariant
+              // that breaks the instant that returns: the overlay's CSS box is
+              // the wrap's box, at EVERY dpr. Checked here across simulated
+              // ratios because CI runs at dpr 1 and would never see it.
+              const ovBox = {};
+              try {
+                const wrapO = document.querySelector(".page-wrap");
+                const ovO = wrapO.querySelector(".page-overlay");
+                const vpO = Volt.App.getViewportForPage(1);
+                const realDpr = window.devicePixelRatio;
+                const fails = [];
+                for (const d of [1, 1.25, 1.5, 2]) {
+                  Object.defineProperty(window, "devicePixelRatio", { value: d, configurable: true });
+                  Ann.renderOverlay(wrapO, 1);
+                  const b = ovO.getBoundingClientRect();
+                  if (Math.abs(b.width - vpO.width) > 1 || Math.abs(b.height - vpO.height) > 1) {
+                    fails.push({ dpr: d, css: Math.round(b.width) + "x" + Math.round(b.height), want: Math.round(vpO.width) + "x" + Math.round(vpO.height) });
+                  }
+                }
+                Object.defineProperty(window, "devicePixelRatio", { value: realDpr, configurable: true });
+                Ann.renderOverlay(wrapO, 1);
+                ovBox.dprFailures = fails;
+                ovBox.allOk = fails.length === 0;
+              } catch (e) { ovBox.error = String((e && e.message) || e); ovBox.allOk = false; }
+              lineSel.overlayBox = ovBox;
             } catch (e) { lineSel.error = String((e && e.message) || e); }
-            lineSel.allOk = lineSel.singleQuad === true && lineSel.singleClipped === true &&
+            lineSel.allOk = (lineSel.overlayBox && lineSel.overlayBox.allOk === true) &&
+              lineSel.singleQuad === true && lineSel.singleClipped === true &&
               lineSel.multiQuads === true && lineSel.multiMiddleFull === true &&
               lineSel.multiEndsFlush === true && lineSel.gapIsArea === true &&
               lineSel.scaleVarSet === true && lineSel.lowZoomTwoLines === true &&

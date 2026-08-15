@@ -239,7 +239,18 @@ body {
   position: relative;
   z-index: 50;
   user-select: none;
+  /* Nothing may leave the window: the toolbar squeezes instead of overflowing.
+     The search field is the only elastic member (it absorbs the squeeze down
+     to 90px); every button group is flex:none so controls never get clipped
+     to unreadable slivers, and the right-hand groups stay reachable at any
+     window width. Without this the row silently ran past the viewport edge
+     and the last buttons were unreachable even maximized. */
+  overflow: visible;
+  min-width: 0;
 }
+#toolbar > .tb-group, #toolbar > .tb-menu, #toolbar > .tb-sep { flex: none; }
+#toolbar > .tb-search { flex: 1 1 auto; min-width: 90px; }
+#toolbar > .tb-spacer { flex: 1 1 0; min-width: 0; }
 
 .tb-group { display: flex; align-items: center; gap: 2px; }
 .tb-sep { width: 1px; height: 22px; background: var(--border-soft); margin: 0 8px; }
@@ -574,7 +585,19 @@ body {
   flex: 1;
   display: flex;
   min-height: 0;
+  min-width: 0;
   position: relative;
+  /* Collapsed panes slide out on a NEGATIVE margin (see body.ai-hidden
+     .ai-panel / body.sidebar-hidden .sidebar). Without a clip they still
+     occupy layout space past the window edge: a hidden AI panel left the
+     document 340px (= --ai-w) wider than the viewport, so the app scrolled
+     sideways and the right-hand chrome sat off-screen even maximized.
+     `clip`, NOT `hidden`: `hidden` would also make #main a SCROLL CONTAINER,
+     so any focus/scrollIntoView inside the viewer could scroll the whole
+     pane a few px and silently shift every page-local coordinate (it broke
+     the smoke's area-highlight stage exactly that way). `clip` clips and
+     nothing else. */
+  overflow: clip;
 }
 
 /* ── Sidebar ─────────────────────────────── */
@@ -1015,7 +1038,11 @@ body.annotating .page-text-layer { user-select: none; }
 
 .page-overlay {
   position: absolute;
-  inset: 0;
+  /* top/left only — `inset: 0` cannot stretch a replaced element (canvas), so
+     it silently left the overlay at its attribute size. renderOverlay() sets
+     the CSS width/height explicitly, exactly as .page-canvas does. */
+  top: 0;
+  left: 0;
   pointer-events: none;
   border-radius: 3px;
 }
@@ -1745,6 +1772,36 @@ body.ai-hidden .ai-panel { margin-right: calc(var(--ai-w) * -1); }
 }
 body.resizing-ai { cursor: ew-resize; user-select: none; }
 body.resizing-ai * { cursor: ew-resize !important; }
+
+/* Sidebar width handle — same affordance as .ai-resize, but a static flex
+   child sitting between the sidebar and the viewer (the sidebar is not a
+   positioned container, so this one is not absolutely positioned). Hidden
+   with the sidebar so a collapsed rail leaves no orphan grab strip. */
+.sidebar-resize {
+  position: relative;
+  flex: 0 0 6px;
+  cursor: ew-resize;
+  z-index: 6;
+  touch-action: none;
+  outline: none;
+  align-self: stretch;
+}
+.sidebar-resize::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: 2px;
+  width: 2px;
+  background: var(--border);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.sidebar-resize:hover::after, .sidebar-resize:focus-visible::after, .sidebar-resize.active::after {
+  opacity: 1;
+  background: var(--accent);
+}
+body.sidebar-hidden .sidebar-resize { display: none; }
+body.resizing-sidebar { cursor: ew-resize; user-select: none; }
+body.resizing-sidebar * { cursor: ew-resize !important; }
 
 .ai-header {
   display: flex;

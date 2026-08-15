@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Volt — local PDF reader &amp; AI editor</title>
-<link rel="stylesheet" href="css/style.css?v=208964a2">
+<link rel="stylesheet" href="css/style.css?v=74c34800">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='4' width='24' height='24' rx='6' fill='%236c7cff'/%3E%3Cpath d='M10 12h12M10 17h12M10 22h7' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/icon-192.png">
@@ -90,7 +90,6 @@
         <span class="brand-mark">V</span>
         <svg class="menu-caret" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
       </button>
-      <div class="brand-name">Volt<span class="brand-dot">.</span></div>
       <div class="tb-menu-panel" id="menu-brand-panel" role="menu" hidden>
         <button id="btn-open" class="tb-menu-item" role="menuitem" title="Open PDF (Ctrl+O)">
           <svg viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/><path d="M12 10v6m0 0 3-3m-3 3-3-3"/></svg>
@@ -398,6 +397,13 @@
         </div>
       </div>
     </aside>
+
+    <!-- Sidebar width handle — mirrors the AI panel's #ai-resize (drag, arrow
+         keys, double-click to reset). Sits on the sidebar's RIGHT edge, so the
+         arrow mapping is the natural one: Right grows, Left shrinks. -->
+    <div id="sidebar-resize" class="sidebar-resize" role="separator" aria-orientation="vertical"
+         tabindex="0" title="Resize sidebar — drag, or use Left/Right arrows; double-click resets"
+         aria-label="Resize sidebar — drag, or use Left/Right arrows; double-click resets"></div>
 
     <!-- VIEWER -->
     <section id="viewer">
@@ -1569,11 +1575,11 @@
   <script src="vendor/tesseract/tesseract.min.js?v=a8e29918"></script>
   <script src="js/utils.js?v=c835bb92"></script>
   <script src="js/sample-data.js?v=ee9b0500"></script>
-  <script src="js/annotations.js?v=491d8ea1"></script>
+  <script src="js/annotations.js?v=adc95ebb"></script>
   <script src="js/ai.js?v=2a112948"></script>
   <script src="js/ocr.js?v=c259b0bc"></script>
   <script src="js/voice.js?v=48c83293"></script>
   <script src="js/office-export.js?v=f4485992"></script>
-  <script src="js/app.js?v=460d33c2"></script>
+  <script src="js/app.js?v=f1fb5b04"></script>
 </body>
 </html>

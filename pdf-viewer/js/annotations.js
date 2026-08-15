@@ -2493,8 +2493,21 @@
       const vp = this._app().getViewportForPage(pageIndex);
       if (!overlay || !vp) return;
       const dpr = window.devicePixelRatio || 1;
-      overlay.width = Math.floor(vp.width * dpr);
-      overlay.height = Math.floor(vp.height * dpr);
+      // A <canvas> is a REPLACED element: `position:absolute; inset:0` positions
+      // it but does NOT stretch it — with width/height:auto it takes its
+      // intrinsic size, i.e. whatever the width/height ATTRIBUTES say. So the
+      // backing-store size below is also the CSS size unless one is set
+      // explicitly. At devicePixelRatio 1 that happened to be right; on a
+      // scaled display (Windows 125%/150%, dpr 1.25/1.5) the overlay rendered
+      // dpr times too large while ctx.setTransform(dpr) drew into it as if it
+      // were 1:1 — so every annotation landed dpr times further from the page's
+      // top-left corner than the text it marks, the offset growing down the
+      // page. .page-canvas has always set its CSS size explicitly (see
+      // _renderPage); the overlay must do the same.
+      overlay.width = Math.round(vp.width * dpr);
+      overlay.height = Math.round(vp.height * dpr);
+      overlay.style.width = vp.width + "px";
+      overlay.style.height = vp.height + "px";
       const ctx = overlay.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, vp.width, vp.height);

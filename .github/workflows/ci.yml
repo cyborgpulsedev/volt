@@ -127,20 +127,11 @@ jobs:
     defaults:
       run:
         working-directory: pdf-viewer
-    # If the repo has CSC_LINK/CSC_KEY_PASSWORD secrets set, this job's build
-    # is SIGNED: the round-trip then also proves the updater's publisher
-    # verification (a signed app-update.yml makes electron-updater reject any
-    # exe not signed by the same publisher). Without the secrets the job runs
-    # unsigned — sign:check soft-skips below.
-    env:
-      # DELIBERATELY NO CSC_LINK here: a configured cert makes the round-trip
-      # ARMED (publisherName in app-update.yml), and the updater rejects
-      # untrusted chains — with the dev-cert placeholder that fails CI. The
-      # signed round-trip is covered by the release workflow (real cert). If
-      # a real cert is ever configured here, restore CSC_LINK/CSC_KEY_PASSWORD.
-      #
-      # CSC_LINK: ${{ secrets.CSC_LINK }}
-      # CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+    # NO signing env here, deliberately: this job builds UNSIGNED so the
+    # round-trip is deterministic (a configured cert would arm the updater's
+    # publisher check, and its untrusted chain would fail CI). The SIGNED
+    # round-trip is covered by the release workflow with a real cert — if one
+    # is ever configured here, re-add CSC_LINK / CSC_KEY_PASSWORD env keys.
     steps:
       - uses: actions/checkout@v4
 

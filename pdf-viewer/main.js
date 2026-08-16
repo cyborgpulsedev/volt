@@ -1331,9 +1331,11 @@ function runSmokeTest(w) {
   // and killing runs that were merely slow, not hung
 
   const report = (ok, extra) => {
-    // verdict LAST: extra often carries the probe's own `ok` field (e.g. a
-    // failing bridge/invariant guard spread over a passing probe result) —
-    // spread first so the printed ok ALWAYS matches the exit code
+    // NOTE: the printed object is `{...extra, ok}` — extra carries the probe
+    // result which already has an `ok` key FIRST (from the renderer), so the
+    // final `ok` shorthand overwrites that value IN PLACE: the serialized
+    // JSON keeps `"ok"` as its FIRST key. Consumers must read the leading
+    // `"ok"` of the SMOKE_RESULT line, not expect it last.
     console.log("SMOKE_RESULT " + JSON.stringify({ ...extra, ok }));
     cleanupSmokeProfile();
     setTimeout(() => app.exit(ok ? 0 : 1), 300);
@@ -6679,6 +6681,8 @@ function runSmokeFeedTest(w) {
   }, 90000).unref();
 
   const report = (ok, extra) => {
+    // same shape as the main smoke: `ok` lands FIRST in the JSON (extra's own
+    // `ok` key keeps its position) — consumers read the leading `"ok"`
     console.log("SMOKE_RESULT " + JSON.stringify({ ...extra, ok }));
     cleanupSmokeProfile();
     setTimeout(() => app.exit(ok ? 0 : 1), 300);

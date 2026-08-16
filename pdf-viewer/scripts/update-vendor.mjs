@@ -233,38 +233,55 @@ function runSmoke(exeOverride, extraArgs = []) {
   }
   const res = spawnSync(exe, [".", NO_FOCUS ? "--smoke-no-focus" : "--smoke", ...extraArgs], { cwd: APP_DIR, encoding: "utf8", timeout: 120_000, windowsHide: true });
   const out = (res.stdout || "") + (res.stderr || "");
-  const m = out.match(/"ok":(true|false)/);
+  // the verdict is the LEADING "ok" of the LAST SMOKE_RESULT line (the probe
+  // JSON starts with "{\"ok\":...") — NOT any "ok" elsewhere in the
+  // transcript, which can carry bridge/invariant noise from the renderer
+  const vm = out.match(/SMOKE_RESULT \{"ok":(true|false)/g);
+  const verdict = vm && vm.length ? vm[vm.length - 1].match(/"ok":(true|false)/)[1] : null;
   // the SMOKE_RESULT JSON is ~4.5 KB — keep enough of the transcript on the
   // failure path for summarizeSmokeFailures to parse the failing stage names
   if (res.error) return { ok: false, reason: String(res.error).slice(0, 200), out: out.slice(-12000) };
-  if (!m) return { ok: false, reason: `smoke exited ${res.status} without ok result`, out: out.slice(-12000) };
-  if (m[1] !== "true") return { ok: false, reason: "smoke reported ok:false", out: out.slice(-12000) };
+  if (!verdict) return { ok: false, reason: `smoke exited ${res.status} without ok result`, out: out.slice(-12000) };
+  if (verdict !== "true") return { ok: false, reason: "smoke reported ok:false", out: out.slice(-12000) };
   if (res.status !== 0) return { ok: false, reason: `smoke printed ok:true but exited ${res.status}`, out: out.slice(-12000) };
   return { ok: true, out: out.slice(-500) };
 }
 
 /** Pull the failing probe gates out of a SMOKE_RESULT transcript, so a failed
     gate names the DOM-contract stage (e.g. hiddenProbe.boot, visibleProbe,
-    modalCycle) instead of a bare ok:false. Returns a comma-joined string or
-    null when nothing can be parsed. */
+    modalCycle, pageMgr, versionBanner) instead of a bare ok:false. Walks the
+    whole result generically — any object carrying allOk:false / pass:false
+    (or a failing ok:false leaf with no allOk) is named with its dotted path.
+    Returns a comma-joined string or null when nothing can be parsed.
+    Extraction is brace-balanced from the LAST SMOKE_RESULT line, so trailing
+    stderr noise or earlier SMOKE_RESULT fragments can't poison the parse. */
 function summarizeSmokeFailures(out) {
-  const m = String(out || "").match(/SMOKE_RESULT (\{.*\})/);
-  if (!m) return null;
+  const text = String(out || "");
+  const idx = text.lastIndexOf("SMOKE_RESULT ");
+  if (idx < 0) return null;
+  const rest = text.slice(idx + "SMOKE_RESULT ".length);
+  const start = rest.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, end = -1;
+  for (let j = start; j < rest.length; j++) {
+    if (rest[j] === "{") depth++;
+    else if (rest[j] === "}") { depth--; if (depth === 0) { end = j; break; } }
+  }
+  if (end < 0) return null;
   try {
-    const r = JSON.parse(m[1]);
+    const r = JSON.parse(rest.slice(start, end + 1));
     const fails = [];
-    for (const [k, v] of Object.entries(r.hiddenProbe || {})) {
-      if (v && typeof v === "object" && v.pass === false) fails.push("hiddenProbe." + k);
-    }
-    for (const [k, v] of Object.entries(r.visibleProbe || {})) {
-      if (v && typeof v === "object" && v.pass === false) fails.push("visibleProbe." + k);
-    }
-    for (const k of ["modalCycle", "serviceWorkerCache", "indexHtmlCache", "fingerprint", "restoreSummary", "restoreUrl", "textHighlightMove", "duplicate", "nudge", "rotateArea", "modal", "watch", "realKeys", "vendorBootErrors"]) {
-      const v = r[k];
-      if (v && typeof v === "object" && v.allOk === false) fails.push(k);
-      if (k === "realKeys" && v && typeof v === "object" && v.ok === false) fails.push("realKeys");
-      if (k === "realKeys" && v && typeof v === "object" && v.restore && v.restore.allOk === false) fails.push("realKeys.restore");
-    }
+    const walk = (node, path, isRoot) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) { node.forEach((v, i) => walk(v, path + "[" + i + "]", false)); return; }
+      if (node.allOk === false) { fails.push(path); return; }
+      if (node.pass === false) { fails.push(path); return; }
+      // an ok:false leaf (e.g. launcherGate, realKeys, a bridge guard) — but
+      // the root's own `ok` is the aggregate verdict, not a stage
+      if (!isRoot && node.ok === false && !("allOk" in node) && !("pass" in node)) { fails.push(path); return; }
+      for (const [k, v] of Object.entries(node)) walk(v, path ? path + "." + k : k, false);
+    };
+    walk(r, "", true);
     if (!fails.length && r.ok === false) return "probe reported ok:false (no stage detail)";
     return fails.length ? fails.join(", ") : null;
   } catch { return null; }

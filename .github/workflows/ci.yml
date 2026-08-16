@@ -77,7 +77,8 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: package-lock.json
+          # repo-root-relative — the lockfile lives under pdf-viewer/
+          cache-dependency-path: pdf-viewer/package-lock.json
 
       - name: Install dependencies (no postinstall scripts)
         run: npm ci --no-audit --no-fund --ignore-scripts
@@ -89,7 +90,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules/electron/dist
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          # hashFiles is repo-root-relative too — a non-existent file makes
+          # the key constant and would reuse a stale Electron binary
+          key: electron-${{ runner.os }}-${{ hashFiles('pdf-viewer/package-lock.json') }}
 
       - name: Install Electron binary
         run: node node_modules/electron/install.js
@@ -136,7 +139,8 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: package-lock.json
+          # repo-root-relative — the lockfile lives under pdf-viewer/
+          cache-dependency-path: pdf-viewer/package-lock.json
 
       - name: Install dependencies (no postinstall scripts)
         run: npm ci --no-audit --no-fund --ignore-scripts
@@ -147,7 +151,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules/electron/dist
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          # hashFiles is repo-root-relative too — a non-existent file makes
+          # the key constant and would reuse a stale Electron binary
+          key: electron-${{ runner.os }}-${{ hashFiles('pdf-viewer/package-lock.json') }}
 
       - name: Install Electron binary
         run: node node_modules/electron/install.js

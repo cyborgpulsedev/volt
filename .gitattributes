@@ -1,0 +1,23 @@
+# Line-ending normalization.
+#
+# gen-sw.mjs hashes the app shell's bytes to derive sw.js's cache name and
+# index.html's ?v= asset stamps. Those hashes must be identical on every
+# checkout — a developer with core.autocrlf=true (CRLF working tree) and CI
+# with autocrlf=false (LF) would otherwise compute different hashes for the
+# same commit, and the smoke's serviceWorkerCache / indexHtmlCache gates
+# would fail one side or the other. Pin every hashed text file to LF so the
+# bytes are deterministic everywhere.
+* text=auto
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+VERSION text eol=lf
+sw.js text eol=lf
+*.wasm binary
+*.png binary
+*.gz binary
+*.pdf binary

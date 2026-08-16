@@ -5,8 +5,10 @@
 "use strict";
 const { app } = require("electron");
 const { appendFileSync } = require("node:fs");
+const { join } = require("node:path");
+const { tmpdir } = require("node:os");
 
-const log = (s) => { try { appendFileSync("C:/Users/bbhat/AppData/Local/Temp/volt-inst-a.log", s + "\n"); } catch (e) {} };
+const log = (s) => { try { appendFileSync(join(tmpdir(), "volt-inst-a.log"), s + "\n"); } catch (e) {} };
 
 const got = app.requestSingleInstanceLock();
 if (got) {

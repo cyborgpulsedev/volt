@@ -238,12 +238,16 @@ function runSmoke(exeOverride, extraArgs = []) {
   // transcript, which can carry bridge/invariant noise from the renderer
   const vm = out.match(/SMOKE_RESULT \{"ok":(true|false)/g);
   const verdict = vm && vm.length ? vm[vm.length - 1].match(/"ok":(true|false)/)[1] : null;
-  // the SMOKE_RESULT JSON is ~4.5 KB — keep enough of the transcript on the
-  // failure path for summarizeSmokeFailures to parse the failing stage names
-  if (res.error) return { ok: false, reason: String(res.error).slice(0, 200), out: out.slice(-12000) };
-  if (!verdict) return { ok: false, reason: `smoke exited ${res.status} without ok result`, out: out.slice(-12000) };
-  if (verdict !== "true") return { ok: false, reason: "smoke reported ok:false", out: out.slice(-12000) };
-  if (res.status !== 0) return { ok: false, reason: `smoke printed ok:true but exited ${res.status}`, out: out.slice(-12000) };
+  // the SMOKE_RESULT line is a single ~21 KB JSON (and has grown with every
+  // new probe stage) — on the failure path keep the WHOLE transcript so the
+  // summarizer can find the line and name the failing stage. (A 12 KB tail
+  // slice silently truncated the line, losing the "SMOKE_RESULT " marker and
+  // the JSON's start — CI failures then showed only a bare ok:false.)
+  const diag = out.slice(-500000);
+  if (res.error) return { ok: false, reason: String(res.error).slice(0, 200), out: diag };
+  if (!verdict) return { ok: false, reason: `smoke exited ${res.status} without ok result`, out: diag };
+  if (verdict !== "true") return { ok: false, reason: "smoke reported ok:false", out: diag };
+  if (res.status !== 0) return { ok: false, reason: `smoke printed ok:true but exited ${res.status}`, out: diag };
   return { ok: true, out: out.slice(-500) };
 }
 
@@ -255,7 +259,10 @@ function runSmoke(exeOverride, extraArgs = []) {
     Returns a comma-joined string or null when nothing can be parsed.
     Extraction is brace-balanced from the LAST SMOKE_RESULT line, so trailing
     stderr noise or earlier SMOKE_RESULT fragments can't poison the parse. */
-function summarizeSmokeFailures(out) {
+/** Extract the last SMOKE_RESULT line's JSON by balanced braces — immune to
+    renderer console noise, earlier fragments, and trailing stderr. Returns
+    the JSON string or null when nothing can be pulled. */
+function extractResultJson(out) {
   const text = String(out || "");
   const idx = text.lastIndexOf("SMOKE_RESULT ");
   if (idx < 0) return null;
@@ -268,8 +275,14 @@ function summarizeSmokeFailures(out) {
     else if (rest[j] === "}") { depth--; if (depth === 0) { end = j; break; } }
   }
   if (end < 0) return null;
+  return rest.slice(start, end + 1);
+}
+
+function summarizeSmokeFailures(out) {
+  const json = extractResultJson(out);
+  if (!json) return null;
   try {
-    const r = JSON.parse(rest.slice(start, end + 1));
+    const r = JSON.parse(json);
     const fails = [];
     const walk = (node, path, isRoot) => {
       if (!node || typeof node !== "object") return;
@@ -654,7 +667,13 @@ async function main() {
       console.log("✗ " + smoke.reason);
       const fails = summarizeSmokeFailures(smoke.out || "");
       if (fails) console.log("  failing stages: " + fails);
-      else console.log("  smoke tail: " + String(smoke.out || "").slice(-700).replace(/\r?\n/g, " ⏎ "));
+      else {
+        console.log("  smoke tail: " + String(smoke.out || "").slice(-700).replace(/\r?\n/g, " ⏎ "));
+        // no parseable stage summary — dump the raw result so a failing
+        // stage is still visible in the CI log instead of a bare ok:false
+        const raw = extractResultJson(smoke.out || "");
+        if (raw) console.log("  raw SMOKE_RESULT: " + raw);
+      }
     }
     if (!api.pdfjs.ok || !api.pdflib.ok || !(api.tesseract && api.tesseract.ok) || !smoke.ok) { fail("vendor verification failed"); return; }
     console.log("\n✓ vendor is healthy");

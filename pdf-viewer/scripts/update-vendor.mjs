@@ -637,6 +637,7 @@ async function main() {
       console.log("✗ " + smoke.reason);
       const fails = summarizeSmokeFailures(smoke.out || "");
       if (fails) console.log("  failing stages: " + fails);
+      else console.log("  smoke tail: " + String(smoke.out || "").slice(-700).replace(/\r?\n/g, " ⏎ "));
     }
     if (!api.pdfjs.ok || !api.pdflib.ok || !(api.tesseract && api.tesseract.ok) || !smoke.ok) { fail("vendor verification failed"); return; }
     console.log("\n✓ vendor is healthy");

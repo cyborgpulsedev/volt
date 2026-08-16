@@ -996,7 +996,13 @@ async function realKeyStage(w) {
     first, then the Pages-selection subset deck when given). */
 async function validateOfficeStage(docxPath, xlsxPath, pptxPath, subsetPath, subsetSlides) {
   const result = { ok: false, error: null, stdout: "", pptxSlides: null, subsetSlides: null };
-  const py = join(APP_ROOT, "scripts", "validate-office.py");
+  // The script lives under APP_ROOT — the dev tree, or inside app.asar in a
+  // packaged build. Node's fs reads the asar transparently, but the spawned
+  // `python` cannot, so materialize it to a real temp file first; otherwise
+  // the packaged app's smoke would silently see zero slide counts.
+  const pySrc = join(APP_ROOT, "scripts", "validate-office.py");
+  const py = join(tmpdir(), "volt-validate-office-" + process.pid + ".py");
+  writeFileSync(py, readFileSync(pySrc));
   const args = [py, docxPath, "Quarterly Sales", xlsxPath, "Apples", pptxPath, "Apples", pptxPath, "<p:pic>"];
   if (subsetPath) args.push(subsetPath, "Page 3");
   await new Promise((resolve) => {
@@ -1004,7 +1010,7 @@ async function validateOfficeStage(docxPath, xlsxPath, pptxPath, subsetPath, sub
     let out = "";
     child.stdout.on("data", (d) => { out += d; });
     child.stderr.on("data", (d) => { out += d; });
-    child.on("error", (e) => { result.error = "python spawn: " + e.message; resolve(); });
+    child.on("error", (e) => { result.error = "python spawn: " + e.message; try { rmSync(py, { force: true }); } catch { /* ignore */ } resolve(); });
     child.on("close", (code) => {
       result.stdout = out.trim();
       // python reports each deck's slide count with its path — map them so the
@@ -1016,6 +1022,7 @@ async function validateOfficeStage(docxPath, xlsxPath, pptxPath, subsetPath, sub
       const slidesOk = !subsetPath || result.subsetSlides === subsetSlides;
       result.ok = code === 0 && /OFFICE_VALIDATE OK/.test(out) && slidesOk;
       if (!result.ok) result.error = "validate-office.py exit " + code + ": " + out.trim().slice(0, 300);
+      try { rmSync(py, { force: true }); } catch { /* ignore */ }
       resolve();
     });
   });
@@ -1059,7 +1066,6 @@ async function toolbarResizeStage(w) {
           sidebar: rect("btn-sidebar"), ai: rect("btn-ai"), settings: rect("btn-settings"), help: rect("btn-help"),
           brand: rect("btn-brand"), markup: rect("btn-markup"), view: rect("btn-view"), tools: rect("btn-tools"),
           menuLabel: shown("#btn-markup .menu-label"),
-          brandName: shown(".brand-name"),
           zoomLabel: shown("#zoom-label"),
           searchCount: shown("#search-count"),
           searchPrev: shown("#search-prev"),
@@ -1076,14 +1082,15 @@ async function toolbarResizeStage(w) {
       const controls = [m.sidebar, m.ai, m.settings, m.help, m.markup, m.view, m.tools];
       const controlsVisible = controls.every((c) => c && c.vis && c.disp !== "none");
       // tier expectations (media queries key on the VIEWPORT = inner width):
-      // tier 2 collapses the menu labels with the brand/zoom (the 960–1100
-      // band is the tightest since the OCR group moved into Tools), tier 3
-      // sheds the search count + tightens search, tier 4 drops the last
-      // search buttons — same collapse ladder as before, re-anchored on the
-      // menus
+      // tier 2 collapses the zoom + menu labels (the 960–1100 band is the
+      // tightest since the OCR group moved into Tools; the standalone
+      // "Volt." wordmark was removed, so there is no brand text to hide),
+      // tier 3 sheds the search count + tightens search, tier 4 drops the
+      // last search buttons — same collapse ladder as before, re-anchored on
+      // the menus
       const tier1 = m.innerW <= 1300, tier2 = m.innerW <= 1100, tier3 = m.innerW <= 960, tier4 = m.innerW <= 840;
       const tierOk =
-        (!tier2 || (m.brandName === false && m.zoomLabel === false && m.menuLabel === false)) &&
+        (!tier2 || (m.zoomLabel === false && m.menuLabel === false)) &&
         (!tier3 || m.searchCount === false) &&
         (!tier4 || m.searchPrev === false);
       out.sizes.push({

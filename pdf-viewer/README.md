@@ -1546,6 +1546,14 @@ Authenticode-signed by the configured publisher and the packaged
 `app-update.yml` carries a matching `publisherName` (without a cert it
 soft-skips — dev builds are fine unsigned). Run it after any signing build.
 
+**Current status (2026-08-16):** no certificate is configured on this build
+machine — `npm run sign:check` reports `no CSC_LINK configured`. So builds
+produced here are **unsigned**: they install and update normally, but users
+see the SmartScreen "unrecognized app" warning on first run and the updater
+does NOT verify signatures (no `publisherName` in `app-update.yml`). `npm run
+release` will refuse to run until a cert is configured. Provide `CSC_LINK`
+(and `CSC_KEY_PASSWORD`) to switch to signed builds.
+
 ### Code signing & SmartScreen
 
 An Authenticode signature from a real CA (DigiCert, Sectigo, …) removes the

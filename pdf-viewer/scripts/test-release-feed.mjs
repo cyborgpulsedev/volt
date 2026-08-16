@@ -94,6 +94,22 @@ function makeFeed(installerPath, adv) {
   return { exeName, size: buf.length };
 }
 
+// electron-updater reads resources/app-update.yml for its initial config, and
+// its download step re-reads it. The `dir` target and `--publish never` builds
+// never write that file, so a dist/ produced by `npm run dist:dir` (or this
+// test's own --build) would ENOENT mid-download and the round-trip would time
+// out. Write the generic-provider config the run uses anyway (setFeedURL +
+// VOLT_UPDATE_URL) — exactly what a generic-provider release's packaged app
+// would contain — so the gate is deterministic regardless of how dist/ was
+// produced. The client chain (latest.yml fetch → sha512 verify → download →
+// update-downloaded → banner) stays 100% real.
+function ensureAppUpdateYml(feedUrl) {
+  const resourcesDir = join(DIST, "win-unpacked", "resources");
+  if (!existsSync(resourcesDir)) mkdirSync(resourcesDir, { recursive: true });
+  writeFileSync(join(resourcesDir, "app-update.yml"),
+    "provider: generic\nurl: " + feedUrl + "\nupdaterCacheDirName: volt-pdf-reader-updater\n");
+}
+
 function serveFeed() {
   const server = createServer((req, res) => {
     const urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
@@ -146,6 +162,7 @@ async function main() {
   const server = await serveFeed();
   const feedUrl = "http://127.0.0.1:" + server.address().port + "/";
   note("feed server on " + feedUrl);
+  ensureAppUpdateYml(feedUrl);
 
   try {
     const { code, text } = await runApp(feedUrl, adv);

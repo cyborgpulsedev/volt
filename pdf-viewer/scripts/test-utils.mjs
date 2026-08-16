@@ -309,6 +309,13 @@ t("clampedRange: both out of bounds → empty range (lo > hi)", (() => {
   return r.lo > r.hi;
 })());
 
+// clampPage — the move-to-position / range-selection page-number clamp
+t("clampPage: string and number inputs clamp into [1, max]", U.clampPage("3", 10) === 3 && U.clampPage(3, 10) === 3);
+t("clampPage: above max clamps to max", U.clampPage("12", 10) === 10);
+t("clampPage: 0 / empty / non-numeric / null all land on page 1", U.clampPage("0", 10) === 1 && U.clampPage("", 10) === 1 && U.clampPage("abc", 10) === 1 && U.clampPage(null, 10) === 1);
+t("clampPage: fractions round", U.clampPage("3.7", 10) === 4 && U.clampPage("2.4", 10) === 2);
+t("clampPage: max = 1 (single-page doc)", U.clampPage("1", 1) === 1 && U.clampPage("5", 1) === 1);
+
 // ── thumbnail scale ──
 t("thumbScale: letter page (612pt) fits the 120px target", U.thumbScale(612) === Math.min(0.22, 120 / 612));
 t("thumbScale: wide page scales below the cap", U.thumbScale(2000) === 0.06);

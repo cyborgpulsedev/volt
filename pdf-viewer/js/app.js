@@ -2165,7 +2165,7 @@
       const sel = this._pageSel ? [...this._pageSel].sort((a, b) => a - b) : [];
       if (!sel.length) { this.toast("Select pages first"); return; }
       const n = plan.length;
-      const target = Math.max(1, Math.min(n, Math.round(Number(pos) || 1)));
+      const target = Utils.clampPage(pos, n);
       const insertAt = Math.max(0, Math.min(n - sel.length, target - 1));
       const entries = sel.map((i) => plan[i]);
       const newPlan = plan.filter((_, i) => !this._pageSel.has(i));
@@ -2667,7 +2667,7 @@
       const set = new Set(sel);
       const dragged = [...set].sort((a, b) => a - b);
       const maxStart = n - dragged.length + 1;
-      const target = pos === "last" ? maxStart : Math.max(1, Math.min(maxStart, Math.round(Number(pos) || 1)));
+      const target = pos === "last" ? maxStart : Utils.clampPage(pos, maxStart);
       // the block occupies [target, target+len); every non-dragged page keeps
       // its relative order in the remaining slots — same rule as the manager
       const rest = [];
@@ -2869,7 +2869,7 @@
       // the form speaks the drag-drop indicator's language (like the manager's)
       el.thumbMoveHint.textContent = "3 · before 4 · after 2 — the block starts there";
       const firstSel = Math.min(...this._thumbSel);
-      el.thumbMovePos.value = String(Math.max(1, Math.min(firstSel, this.currentDoc.numPages)));
+      el.thumbMovePos.value = String(Utils.clampPage(firstSel, this.currentDoc.numPages));
       el.thumbMoveForm.hidden = false;
       el.thumbMovePos.focus();
       el.thumbMovePos.select();
@@ -4177,8 +4177,8 @@
         the Highlight-all conversion (and Copy w/ citations) too. */
     _selectRangeActions(a, b) {
       const last = this.pageLayout.length;
-      const from = Math.max(1, Math.min(last, Math.round(Number(a) || 1)));
-      const to = Math.max(1, Math.min(last, Math.round(Number(b) || 1)));
+      const from = Utils.clampPage(a, last);
+      const to = Utils.clampPage(b, last);
       const n = to - from + 1;
       const label = "Selected text across " + (n === 1 ? "1 page" : n + " pages") + " — ";
       this.selectTextRange(from, to).then((count) => {
@@ -4278,8 +4278,8 @@
     async selectTextRange(a, b) {
       if (!this.currentDoc || !this.pageLayout.length) return 0;
       const n = this.pageLayout.length;
-      const from = Math.max(1, Math.min(n, Math.round(Number(a) || 1)));
-      const to = Math.max(1, Math.min(n, Math.round(Number(b) || 1)));
+      const from = Utils.clampPage(a, n);
+      const to = Utils.clampPage(b, n);
       const sel = window.getSelection();
       const clear = () => { if (sel) sel.removeAllRanges(); };
       if (from > to) { clear(); return 0; }

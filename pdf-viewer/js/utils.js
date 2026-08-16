@@ -494,6 +494,15 @@
       return { lo, hi };
     },
 
+    /** Parse a page number (string or number) and clamp it into [1, max] —
+        the shared rule behind the move-to-position forms and range selection,
+        so bad input (empty, non-numeric, out of bounds) always lands on a
+        real page: 0 / NaN → 1, above max → max, fractions round. `max` must
+        be a real page count (≥ 1). */
+    clampPage(value, max) {
+      return Math.max(1, Math.min(max, Math.round(Number(value) || 1)));
+    },
+
     /** Thumbnail render scale: the pdf.js scale that fits a page `pageWidth`
         points wide into the ~120px thumb column — a width-ratio capped at
         0.22 so narrow pages don't get oversized thumbs. Unknown / zero

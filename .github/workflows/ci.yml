@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
 #   Volt — CI
-#   Runs the three fast, deterministic gates on every push /
-#   pull request against main:
+#   Runs ALL of the self-test gates on every push (any branch) and
+#   every pull request:
 #
 #     1. Launcher integrity   (npm run check:launchers)
 #        static cmd.exe parse-hazard rules + REAL cmd.exe parse
@@ -9,17 +9,36 @@
 #        this job runs on windows-latest) + the hidden-console VBS
 #        wrapper checks. Catches the ".cmd died silently" bug class.
 #
-#     2. Unit tests           (npm run test:utils)
+#     2. Unit tests           (npm run test:utils)       118 tests
 #        pure helpers: markdown, RAG chunking, focus-trap wrap,
 #        window-state, the launcher/VBS static rules themselves.
 #
-#     3. Artifact regression  (npm run test:artifacts)
+#     3. Office export        (npm run test:office)       53 tests
+#        CRC32, the store-only ZIP writer, DOCX/XLSX structure,
+#        table/line detection.
+#
+#     4. File watcher         (npm run test:watch)         9 tests
+#        the poll-based reload watcher (fire rules, stability
+#        delay, debounce, restart-on-error).
+#
+#     5. Vendor integrity     (npm run check:vendor)
+#        vendored pdf.js / pdf-lib / Tesseract verify against the
+#        recorded versions + an Electron smoke — no downloads, the
+#        CI/manual check mode of update-vendor.mjs.
+#
+#     6. PWA render smoke     (npm run smoke:browser:headless)
+#        the full render + hidden-contract + modal probes with the
+#        window loading WITHOUT the preload bridge — the exact
+#        context a browser/PWA tab gets (--smoke-browser). Headless
+#        (--smoke-no-focus) because the OS-focus-dependent real-
+#        keyboard stage is the one thing a VM/CI session can't do.
+#
+#     7. Artifact regression  (npm run test:artifacts)
 #        the sw.js cache-name / index.html ?v= stamp generator guard.
 #        It ALSO runs the Electron smoke twice (negative with stale
 #        artifacts, positive after regeneration) in --smoke-no-focus
-#        mode — the mode designed for VM/CI sessions, so the full
-#        render + hidden-contract + modal probes are covered here
-#        without the OS-focus-dependent real-keyboard stage.
+#        mode — so the full render chain + preload bridge + focus
+#        trap are covered here without OS focus.
 #
 #   A fourth, slower gate (release-feed job) runs the auto-update
 #   round-trip end-to-end: it builds the installer, publishes a
@@ -27,7 +46,10 @@
 #   launches the packaged app against it, and asserts the version
 #   banner appears — the real electron-updater detect → download →
 #   banner chain, not a stub. Windows-only and a few minutes (the
-#   NSIS build dominates); see scripts/test-release-feed.mjs.
+#   NSIS build dominates); see scripts/test-release-feed.mjs. With a
+#   cert secret configured the build is SIGNED and the gate also
+#   proves the updater's publisher verification; sign:check gates the
+#   output either way (soft-skip without a cert).
 #
 #   Install note: dependencies are installed with --ignore-scripts
 #   and the Electron binary is fetched explicitly. electron-builder
@@ -39,12 +61,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
   checks:
-    name: Unit · Artifact · Launcher
+    name: All self-test gates
     runs-on: windows-latest
     defaults:
       run:
@@ -78,6 +99,18 @@ jobs:
 
       - name: Unit tests (utils, markdown, chunking, window-state, launcher rules, VBS)
         run: npm run test:utils
+
+      - name: Office export unit tests (CRC32, ZIP, DOCX/XLSX, tables)
+        run: npm run test:office
+
+      - name: File-watcher unit tests
+        run: npm run test:watch
+
+      - name: Vendor integrity (vendored pdf.js / pdf-lib / Tesseract + smoke)
+        run: npm run check:vendor
+
+      - name: PWA render smoke (no preload bridge, headless)
+        run: npm run smoke:browser:headless
 
       - name: Artifact-generator regression guard (runs the Electron smoke headless)
         run: npm run test:artifacts

@@ -1480,11 +1480,15 @@ it appears, never silently shipped.
 
 ## Development
 
-Every push to `main` (and every pull request) runs these gates on Windows
-CI — see `.github/workflows/ci.yml` at the repo root: `check:launchers`,
-`test:utils`, `test:artifacts` (which itself runs the Electron smoke
-headless, negative and positive), and the slower `release-feed` job (the
-full auto-update round-trip — see "Auto-updates for installed users").
+Every push (any branch) and every pull request runs ALL of the self-test
+gates on Windows CI — see `.github/workflows/ci.yml` at the repo root:
+`check:launchers`, `test:utils`, `test:office`, `test:watch`, `check:vendor`,
+`smoke:browser:headless` (the PWA/no-preload render smoke, headless so the
+VM-safe `--smoke-no-focus` mode is used), and `test:artifacts` (which itself
+runs the Electron smoke headless, negative and positive) — plus the slower
+`release-feed` job (the full auto-update round-trip — see "Auto-updates for
+installed users"). The OS-focus-dependent real-keyboard stage is the one
+thing CI can't do; it stays in the local `npm run smoke` / `smoke:browser`.
 
 ```bash
 node scripts/make-sample.mjs   # regenerate the sample PDF + embedded copy (from the repo root: scripts/ is Volt/scripts)
@@ -1532,13 +1536,26 @@ independent of the dev-mode registration the setup scripts make).
 
 **Signing is automatic when a certificate is configured.** electron-builder
 signs `Volt.exe`, the NSIS installer, and the uninstaller with the cert from
-the standard env vars — no build config needed:
+`CSC_LINK` — a `.pfx` path, a base64-encoded `.pfx`, or an `https://` URL —
+plus `CSC_KEY_PASSWORD`; no build config needed. `WIN_CSC_LINK` /
+`WIN_CSC_KEY_PASSWORD` are the Windows-specific aliases.
+
+**The certificate flow is one command.** `npm run sign:setup`
+(`scripts/signing-setup.cjs`) handles the whole lifecycle:
 
 ```bash
-CSC_LINK=C:\certs\volt.pfx CSC_KEY_PASSWORD=*** npm run dist
-# CSC_LINK may also be a base64-encoded .pfx (convenient for CI secrets);
-# WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD are the Windows-specific aliases.
+npm run sign:setup                        # status: configured? valid? signtool? artifacts signed?
+npm run sign:setup import C:\certs\volt.pfx [password]  # adopt a real CA cert
+npm run sign:setup dev-cert               # self-signed TEST cert (pipeline practice only)
+npm run sign:setup trust | untrust        # trust / remove the dev root (updater runtime check)
+npm run sign:setup clear                  # drop signing config
 ```
+
+Credentials live in `pdf-viewer/.env` (gitignored, never commit it), which
+`npm run dist` / `dist:dir` / `release` / `sign:check` / `test:release-feed`
+all load through `scripts/load-env.cjs`. A real environment variable always
+wins over the file, so CI secrets and one-liners (`CSC_LINK=… npm run dist`)
+behave exactly as before — `.env` is just the convenient local home.
 
 `npm run sign:check` (`scripts/check-signing.cjs`) gates the OUTPUT: with a
 cert configured it fails unless `Volt.exe` **and** the installer are
@@ -1546,13 +1563,17 @@ Authenticode-signed by the configured publisher and the packaged
 `app-update.yml` carries a matching `publisherName` (without a cert it
 soft-skips — dev builds are fine unsigned). Run it after any signing build.
 
-**Current status (2026-08-16):** no certificate is configured on this build
-machine — `npm run sign:check` reports `no CSC_LINK configured`. So builds
-produced here are **unsigned**: they install and update normally, but users
-see the SmartScreen "unrecognized app" warning on first run and the updater
-does NOT verify signatures (no `publisherName` in `app-update.yml`). `npm run
-release` will refuse to run until a cert is configured. Provide `CSC_LINK`
-(and `CSC_KEY_PASSWORD`) to switch to signed builds.
+**To go live you still need a certificate from a CA** (DigiCert, Sectigo,
+SSL.com, …) — that's an external purchase; nothing in this repo can mint a
+trusted one. Until one is imported, builds are **unsigned**: they install and
+update normally, but users see the SmartScreen "unrecognized app" warning on
+first run and the updater does NOT verify signatures (no `publisherName` in
+`app-update.yml`). `npm run release` refuses to run unsigned — and it also
+refuses SELF-SIGNED certificates: publishing with the dev cert would hand
+every user a SmartScreen warning *and* break their auto-updates (the updater
+rejects untrusted chains), so `release` runs a certificate guard
+(`signing-setup check-release`) that aborts on self-signed / expired /
+keyless certs.
 
 ### Code signing & SmartScreen
 
@@ -1571,6 +1592,25 @@ app" warning for a while — reputation builds with consistent signed releases
 and install counts. Signing also keeps signatures valid after cert expiry,
 since electron-builder time-stamps every signature (RFC3161 → digicert,
 pinned in `build.win.signtoolOptions`).
+
+**Testing the whole flow without buying a cert:** `npm run sign:setup
+dev-cert` mints a self-signed code-signing cert and points `.env` at it.
+`npm run dist` then signs every artifact, `npm run sign:check` passes, and
+the packaged `app-update.yml` carries the dev publisher — so the updater's
+verification is ARMED (it rejects anything not signed by that publisher).
+What a self-signed cert can't do: Windows/SmartScreen won't trust it, and the
+updater's runtime check additionally requires a *trusted* chain, so `npm run
+test:release-feed`'s download round-trip rejects a dev-signed exe unless you
+first run `npm run sign:setup trust` (installs the dev root into
+CurrentUser\Root — removable with `untrust`). That trust is local and
+reversible; real users lose the SmartScreen warning only with a real CA cert.
+
+**Current status (2026-08-16):** no production certificate is configured on
+this build machine — `npm run sign:setup status` reports `NOT configured`, so
+builds produced here are unsigned. The pipeline itself is fully wired and was
+verified end-to-end with a self-signed dev certificate (signed build →
+`sign:check` green → updater verification armed). Import a CA cert with
+`npm run sign:setup import` to switch to production-signed builds.
 
 For a modern, CI-friendly alternative to owning a PFX, **Azure Trusted
 Signing** issues short-lived certs from an HSM with no password management
@@ -1609,7 +1649,9 @@ config, which electron-builder bakes into `app-update.yml`.
 **Shipping a release to installed users:**
 
 ```bash
-# from pdf-viewer/, with the version bumped (see Releasing a version):
+# from pdf-viewer/, with the version bumped (see Releasing a version).
+# Once sign:setup has written .env, plain `npm run release` suffices; the
+# explicit form (or CI secrets) always works too:
 GH_TOKEN=$(gh auth token) CSC_LINK=C:\certs\volt.pfx CSC_KEY_PASSWORD=*** npm run release
 #  → builds the installer, SIGNS it with the configured cert, PUBLISHES it +
 #    latest.yml + the .blockmap to GitHub Releases. The blockmap is what

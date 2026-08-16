@@ -10,6 +10,7 @@
     "start": "electron .",
     "smoke": "electron . --smoke",
     "smoke:browser": "electron . --smoke-browser",
+    "smoke:browser:headless": "electron . --smoke-browser --smoke-no-focus",
     "update:vendor": "node scripts/update-vendor.mjs",
     "check:vendor": "node scripts/update-vendor.mjs --check",
     "test:watch": "node scripts/test-file-watcher.mjs",
@@ -20,10 +21,11 @@
     "check:launchers": "node ../scripts/check-launchers.cjs",
     "gen:sw": "node scripts/gen-sw.mjs --write",
     "auto:vendor": "node scripts/auto-update.cjs --smoke-exe \"node_modules/electron/dist/electron.exe\"",
-    "dist": "electron-builder --win nsis",
-    "dist:dir": "electron-builder --win dir",
+    "dist": "node scripts/run-builder.cjs --win nsis",
+    "dist:dir": "node scripts/run-builder.cjs --win dir",
     "release": "node scripts/release.cjs",
-    "sign:check": "node scripts/check-signing.cjs"
+    "sign:check": "node scripts/check-signing.cjs",
+    "sign:setup": "node scripts/signing-setup.cjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"

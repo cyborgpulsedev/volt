@@ -1,0 +1,86 @@
+# ═══════════════════════════════════════════════════════════════
+#   Volt — Signed release (tag push)
+#
+#   Pushing a tag `vX.Y.Z` builds the NSIS installer, SIGNS it with
+#   the certificate from the CSC_LINK / CSC_KEY_PASSWORD secrets, and
+#   PUBLISHES it + latest.yml + the .blockmap to GitHub Releases
+#   (scripts/release.cjs refuses to run without a cert, then runs the
+#   sign:check gate on the output — a signed, verified release or no
+#   release at all).
+#
+#   Secrets to configure on the repo:
+#     CSC_LINK            the code-signing PFX as base64 (or a URL)
+#     CSC_KEY_PASSWORD    its password
+#     GH_TOKEN            a GitHub PAT with `repo` scope (a plain
+#                         GITHUB_TOKEN also works once the repo is
+#                         public; private repos need a PAT so the
+#                         auto-updater feed is reachable at all)
+#
+#   Before tagging: bump VERSION + package.json `version` + CHANGELOG
+#   (README "Releasing a version"); the guard step below refuses a
+#   tag/version mismatch, and `npm run release` refuses unsigned.
+#   ═══════════════════════════════════════════════════════════════
+name: Release (signed)
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    name: Build · sign · publish
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pdf-viewer
+    env:
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies (no postinstall scripts)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      # Restore the Electron binary BEFORE install.js runs — after npm ci
+      # has wiped node_modules — so an unchanged lockfile reuses the cached
+      # dist instead of re-downloading ~110 MB on every release.
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: node_modules/electron/dist
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Guard — signing secrets configured
+        run: |
+          if ("$env:CSC_LINK" -eq "") { throw "CSC_LINK secret is not set — configure it (and CSC_KEY_PASSWORD) or this release would be unsigned." }
+          if ("$env:GH_TOKEN" -eq "") { throw "GH_TOKEN secret is not set — releases can't be published without it." }
+
+      - name: Guard — tag matches package.json version
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne $ver) {
+            throw "tag v$tag ≠ package.json version $ver — bump VERSION, package.json and CHANGELOG.md first (see README 'Releasing a version')."
+          }
+
+      # scripts/release.cjs: electron-builder --win nsis --publish always
+      # (signs Volt.exe, the installer and the uninstaller with CSC_LINK),
+      # then scripts/check-signing.cjs — exit non-zero unless the artifacts
+      # verify as signed by the configured publisher with a matching
+      # publisherName in app-update.yml (the updater's runtime check).
+      - name: Signed release
+        run: npm run release
+
+      - name: Verify signed artifacts (belt-and-braces, already run by release)
+        run: npm run sign:check

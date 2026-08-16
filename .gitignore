@@ -12,6 +12,11 @@ serve-preview.log
 # Windows reserved-name junk artifact (2-byte stray file)
 CON
 
+# code-signing secrets + local dev certificates (never commit)
+pdf-viewer/.env
+pdf-viewer/certs/
+*.pfx
+
 # vendor updater transient state (download staging / swap backup / pending flag)
 pdf-viewer/vendor/.staging/
 pdf-viewer/vendor/.backup/

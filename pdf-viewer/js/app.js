@@ -674,51 +674,11 @@
     },
 
     /** Markdown → the tooltip's innerHTML: the CHANGELOG sections whose version
-        is newer than the running bundle and not newer than the served one. */
+        is newer than the running bundle and not newer than the served one.
+        Pure logic lives in Utils.changelogHtml (unit-tested); this reads the
+        running version and delegates. */
     _changelogHtml(md, servedVersion) {
-      if (!md) return "";
-      const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      // split into (version, body) pairs on `## x.y.z` headings
-      const sections = [];
-      const re = /^##\s+(\d+\.\d+\.\d+)\s*$/gm;
-      let m, lastIdx = -1, lastVer = null;
-      while ((m = re.exec(md))) {
-        if (lastVer) sections.push({ ver: lastVer, body: md.slice(lastIdx, m.index) });
-        lastVer = m[1];
-        lastIdx = re.lastIndex;
-      }
-      if (lastVer) sections.push({ ver: lastVer, body: md.slice(lastIdx) });
-      if (!sections.length) return "";
-      const cmp = (a, b) => {
-        const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
-        for (let i = 0; i < 3; i++) { if (pa[i] !== pb[i]) return pa[i] - pb[i]; }
-        return 0;
-      };
-      const current = (typeof window.__VOLT_VERSION === "string" && /^\d+\.\d+\.\d+$/.test(window.__VOLT_VERSION))
-        ? window.__VOLT_VERSION : null;
-      const served = (typeof servedVersion === "string" && /^\d+\.\d+\.\d+$/.test(servedVersion))
-        ? servedVersion : null;
-      // wanted = newer than what's installed, not newer than what's served
-      let wanted = sections.filter((s) =>
-        (current ? cmp(s.ver, current) > 0 : true) && (served ? cmp(s.ver, served) <= 0 : true));
-      if (!wanted.length && served) {
-        // e.g. a downgrade or the current version unknown — show the served one
-        const exact = sections.find((s) => s.ver === served);
-        if (exact) wanted = [exact];
-      }
-      if (!wanted.length) return "";
-      const bullets = (body) => {
-        const items = body.split(/\r?\n/).map((l) => l.trim())
-          .filter((l) => /^[-*]\s+/.test(l)).map((l) => l.replace(/^[-*]\s+/, ""));
-        if (!items.length) return "";
-        return "<ul>" + items.map((i) => "<li>" + esc(i) + "</li>").join("") + "</ul>";
-      };
-      const html = wanted.map((s) =>
-        (wanted.length === 1
-          ? '<div class="ver-tip-title">What\'s new in v' + esc(s.ver) + "</div>"
-          : '<div class="ver-tip-sec"><b>v' + esc(s.ver) + "</b>") + bullets(s.body) +
-        (wanted.length > 1 ? "</div>" : "")).join("");
-      return html;
+      return Utils.changelogHtml(md, window.__VOLT_VERSION, servedVersion);
     },
 
     _showVerTip() {
@@ -826,29 +786,17 @@
       el.aboutVersion.textContent = window.__VOLT_VERSION || "dev";
       const cache = (this._verServed && this._verServed.startsWith("volt-")) ? this._verServed : null;
       el.aboutEngine.textContent = (global.voltDesktop ? "Electron desktop" : "Browser / PWA") + (cache ? " · " + cache : "");
-      // the installed release's changelog section (what THIS version changed)
+      // the installed release's changelog section (what THIS version changed) —
+      // the same pure rendering path as the banner tooltip (Utils, unit-tested),
+      // so parsing/escaping can't drift between the two views
       try {
         const box = el.aboutChangelog;
         fetch("CHANGELOG.md?_t=" + Date.now()).then((r) => (r.ok ? r.text() : "")).catch(() => "")
           .then((md) => {
-            if (!md || !box) return;
-            const re = /^##\s+(\d+\.\d+\.\d+)\s*$/gm;
-            const sections = [];
-            let m, lastIdx = -1, lastVer = null;
-            while ((m = re.exec(md))) {
-              if (lastVer) sections.push({ ver: lastVer, body: md.slice(lastIdx, m.index) });
-              lastVer = m[1]; lastIdx = re.lastIndex;
-            }
-            if (lastVer) sections.push({ ver: lastVer, body: md.slice(lastIdx) });
-            const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            const cur = window.__VOLT_VERSION;
-            const idx = sections.findIndex((s) => s.ver === cur);
-            const sec = idx >= 0 ? sections[idx] : sections[0];
-            if (!sec) { box.hidden = true; return; }
-            const items = sec.body.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^[-*]\s+/.test(l))
-              .map((l) => "<li>" + esc(l.replace(/^[-*]\s+/, "")) + "</li>");
-            box.hidden = items.length ? false : true;
-            box.innerHTML = '<h4>What\'s new in v' + esc(sec.ver) + "</h4><ul>" + items.join("") + "</ul>";
+            if (!box) return;
+            const html = Utils.aboutChangelogHtml(md, window.__VOLT_VERSION);
+            box.hidden = !html;
+            if (html) box.innerHTML = html;
           });
       } catch (e) { /* the About modal must never break */ }
       this._openModal(el.aboutModal);
@@ -1002,7 +950,7 @@
        when the doc came from a path); otherwise it downloads a copy. */
     async _savePdf() {
       if (!this.currentDoc) { this.toast("Open a document first", "error"); return; }
-      const base = (this.currentDocInfo?.name || "document").replace(/\.pdf$/i, "");
+      const base = Utils.stripPdfExt(this.currentDocInfo?.name || "document");
       try {
         const bytes = await Volt.Ann.toAnnotatedPdf();
         if (this.currentPath && global.voltDesktop && typeof global.voltDesktop.writeFile === "function") {
@@ -1326,8 +1274,7 @@
         // navigates. Bounds clamp to the doc, so a stale anchor can't select
         // ghost pages.
         if (e.shiftKey && this._thumbSelAnchor != null) {
-          const lo = Math.max(1, Math.min(this._thumbSelAnchor, page));
-          const hi = Math.min(n, Math.max(this._thumbSelAnchor, page));
+          const { lo, hi } = Utils.clampedRange(this._thumbSelAnchor, page, 1, n);
           this._thumbSel = new Set();
           for (let p = lo; p <= hi; p++) this._thumbSel.add(p);
           this._thumbSelAnchor = page; // the far end anchors the next range
@@ -1515,8 +1462,7 @@
           // keep extending from the last range. Bounds are clamped to the plan,
           // so a stale anchor can never select ghost pages.
           const n = (this._pagePlan || []).length;
-          const lo = Math.max(0, Math.min(this._pageSelAnchor, i));
-          const hi = Math.min(n - 1, Math.max(this._pageSelAnchor, i));
+          const { lo, hi } = Utils.clampedRange(this._pageSelAnchor, i, 0, n - 1);
           this._pageSel = new Set();
           for (let k = lo; k <= hi; k++) this._pageSel.add(k);
           this._pageSelAnchor = i;
@@ -1901,9 +1847,7 @@
 
     /** PDF points → "W × H in" label (72pt = 1in), trailing zeros trimmed. */
     _pageSizeLabel(w, h) {
-      if (!w || !h) return "";
-      const f = (pt) => (Math.round((pt / 72) * 100) / 100).toString().replace(/\.?0+$/, "");
-      return f(w) + " × " + f(h) + " in";
+      return Utils.pageSizeLabel(w, h);
     },
 
     /** Shared thumbnail plumbing: append a canvas, then either blit the cached
@@ -1931,7 +1875,7 @@
       if (!doc) return;
       const p = await doc.getPage(oldPage);
       const d = this.pageDims[oldPage - 1];
-      const scale = Math.min(0.22, 120 / (d?.w || 600));
+      const scale = Utils.thumbScale(d && d.w);
       const vp = p.getViewport({ scale, rotation: this.rotDelta });
       cv.width = Math.floor(vp.width);
       cv.height = Math.floor(vp.height);
@@ -1954,7 +1898,7 @@
       }
       const p = await doc.getPage(entry.page);
       const vp0 = p.getViewport({ scale: 1 });
-      const vp = p.getViewport({ scale: Math.min(0.22, 120 / vp0.width), rotation: 0 });
+      const vp = p.getViewport({ scale: Utils.thumbScale(vp0.width), rotation: 0 });
       cv.width = Math.floor(vp.width);
       cv.height = Math.floor(vp.height);
       cv.style.width = "100%";
@@ -2522,7 +2466,7 @@
       const plan = sel.map((i) => this._pagePlan[i]);
       try {
         const bytes = await Volt.Ann.buildEditedPdf(plan);
-        const base = (this.currentDocInfo?.name || "document").replace(/\.pdf$/i, "");
+        const base = Utils.stripPdfExt(this.currentDocInfo?.name || "document");
         Utils.download(new Blob([bytes], { type: "application/pdf" }), base + "-pages-" + plan.length + ".pdf");
         this.toast("New PDF from " + plan.length + " page" + (plan.length === 1 ? "" : "s") + " exported", "ok");
       } catch (e) {
@@ -2542,7 +2486,7 @@
       if (!Array.isArray(plan) || !plan.length) { this.toast("Nothing to apply", "error"); return; }
       try {
         const bytes = await Volt.Ann.buildEditedPdf(plan);
-        const base = (this.currentDocInfo?.name || "document").replace(/\.pdf$/i, "");
+        const base = Utils.stripPdfExt(this.currentDocInfo?.name || "document");
         if (!skipDownload) {
           Utils.download(new Blob([bytes], { type: "application/pdf" }), base + "-edited.pdf");
         }
@@ -3022,7 +2966,7 @@
        up (Tab/Shift+Tab physically cannot reach it), and focus returns to
        the opener on close. */
     _modals() {
-      return [this.elements.helpModal, this.elements.settingsModal, this.elements.urlModal, this.elements.exportModal, this.elements.restoreModal, this.elements.personaModal, this.elements.pagesModal];
+      return [this.elements.helpModal, this.elements.settingsModal, this.elements.urlModal, this.elements.exportModal, this.elements.restoreModal, this.elements.personaModal, this.elements.pagesModal, this.elements.aboutModal];
     },
     _openModalEl() { return this._modals().find((m) => !m.hidden) || null; },
     _focusablesIn(m) {
@@ -4888,38 +4832,24 @@
     _showRestoreSummary(data) {
       const el = this.elements;
       const esc = Utils.esc;
-      const trunc = (s, n) => (s.length > n ? s.slice(0, n).trimEnd() + "…" : s);
-      const rows = [];
-      // annotations are always part of a backup
+      // the row-building is pure (Utils.restoreSummaryRows, unit-tested) —
+      // this reads the live Volt/DOM state and hands it the plain facts
       const ann = Volt.Ann.list;
       const notes = ann.filter((a) => a.type === "note").length;
-      const marks = ann.length - notes;
-      let annTxt = ann.length + " annotation" + (ann.length === 1 ? "" : "s");
-      if (ann.length) {
-        annTxt += " — " + marks + " mark" + (marks === 1 ? "" : "s");
-        if (notes) annTxt += " · " + notes + " note" + (notes === 1 ? "" : "s");
-      }
-      rows.push({ k: "Annotations", v: annTxt, title: annTxt });
-      // AI overrides — only when the backup carried them (else they didn't land)
-      const ai = data && data.aiSettings && typeof data.aiSettings === "object" && !Array.isArray(data.aiSettings) ? data.aiSettings : null;
-      if (ai) {
-        const eff = (Volt.AI._docSettings && Volt.AI._docSettings()) || {};
-        const parts = [];
-        if (eff.model) parts.push("Model: " + eff.model);
-        if (eff.maxContextChars) parts.push("Context: " + Number(eff.maxContextChars).toLocaleString() + " chars");
-        if (eff.systemPrompt) parts.push("Prompt: “" + trunc(eff.systemPrompt, 64) + "”");
-        const v = parts.length ? parts.join(" · ") : "None in this backup";
-        rows.push({ k: "AI overrides", v, title: parts.join("\n") || v });
-      } else {
-        rows.push({ k: "AI overrides", v: "Not in this backup", title: "This backup didn't include AI overrides" });
-      }
-      // chat transcript — only when the backup carried it
-      if (data && Array.isArray(data.chatHistory)) {
-        const n = Array.isArray(Volt.AI.messages) ? Volt.AI.messages.length : data.chatHistory.length;
-        rows.push({ k: "Chat", v: n + " message" + (n === 1 ? "" : "s"), title: n + " message" + (n === 1 ? "" : "s") });
-      } else {
-        rows.push({ k: "Chat", v: "Not in this backup", title: "This backup didn't include chat history" });
-      }
+      const aiInBackup = !!(data && data.aiSettings && typeof data.aiSettings === "object" && !Array.isArray(data.aiSettings));
+      const eff = (Volt.AI._docSettings && Volt.AI._docSettings()) || {};
+      const chatInBackup = !!(data && Array.isArray(data.chatHistory));
+      const chatCount = chatInBackup
+        ? (Array.isArray(Volt.AI.messages) ? Volt.AI.messages.length : data.chatHistory.length)
+        : 0;
+      const rows = Utils.restoreSummaryRows({
+        annCount: ann.length,
+        notes,
+        ai: aiInBackup ? eff : null,
+        aiInBackup,
+        chatInBackup,
+        chatCount,
+      });
       clearTimeout(this._restoreSummaryTimer);
       // un-hide BEFORE writing the rows: a live region (role="status") only
       // announces mutations that happen while it is visible — writing while

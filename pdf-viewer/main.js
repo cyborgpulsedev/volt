@@ -1720,6 +1720,64 @@ function runSmokeTest(w) {
           verBanner.verTipPresent === true && verBanner.changelogServed === true &&
           verBanner.changelogDiff === true && verBanner.verTipHover === true &&
           verBanner.verTipLeaves === true && !verBanner.error;
+        // ── About modal (Volt ▾ → About Volt…) ────────────────
+        // the modal shows the version, the engine, and "what this version
+        // changed" — the same pure changelog rendering path the banner's
+        // tooltip uses (Utils.aboutChangelogHtml, unit-tested). Assert: the
+        // modal and its changelog box exist and start hidden; opening through
+        // the real _openAbout path populates version + engine and renders the
+        // CURRENT version's section from the REAL served CHANGELOG.md (a
+        // release that forgets its changelog entry fails the smoke); the
+        // background is inert while open and clears on close; the Close button
+        // closes it; and an injected <script> bullet is escaped (the shared
+        // path must not regress into unescaped innerHTML).
+        const aboutModal = { error: null };
+        try {
+          // String.fromCharCode(10) not a backslash-n escape — this whole
+          // probe is a template literal in main.js, so an escape sequence
+          // would collapse to a real newline and break the string literal
+          const NL10 = String.fromCharCode(10);
+          const am = document.getElementById("about-modal");
+          const box = document.getElementById("about-changelog");
+          const versionEl = document.getElementById("about-version");
+          const engineEl = document.getElementById("about-engine");
+          const closeBtn = document.getElementById("about-close");
+          const appEl = Volt.App.elements.app;
+          aboutModal.present = !!am && !!box && !!versionEl && !!engineEl && !!closeBtn;
+          aboutModal.hiddenBoot = !!am && am.hidden === true && getComputedStyle(am).display === "none" &&
+            !!box && box.hidden === true;
+          Volt.App._openAbout();
+          aboutModal.opened = !!am && am.hidden === false && getComputedStyle(am).display !== "none";
+          aboutModal.inertWhileOpen = !!appEl && appEl.inert === true;
+          aboutModal.versionShown = !!versionEl && versionEl.textContent.trim() === (window.__VOLT_VERSION || "dev");
+          aboutModal.engineShown = !!engineEl &&
+            (engineEl.textContent.includes("Electron desktop") || engineEl.textContent.includes("Browser / PWA"));
+          await new Promise((r) => setTimeout(r, 150)); // the changelog fetch lands async
+          aboutModal.changelogServed = !!box && box.hidden === false &&
+            box.innerHTML.includes("What's new in v" + EXPECT_VERSION) && box.innerHTML.includes("<li>");
+          closeBtn.click(); // the real Close wiring
+          aboutModal.closesClean = !!am && am.hidden === true && getComputedStyle(am).display === "none" &&
+            !!appEl && appEl.inert === false;
+          // fixture: an injected <script> bullet must come back escaped through
+          // the shared rendering path
+          const realFetch2 = window.fetch;
+          window.fetch = (url) => String(url).includes("CHANGELOG.md")
+            ? Promise.resolve({ ok: true, text: () => Promise.resolve("## " + EXPECT_VERSION + NL10 + "- <script>alert(1)</script>" + NL10) })
+            : realFetch2(url);
+          try {
+            Volt.App._openAbout();
+            await new Promise((r) => setTimeout(r, 100));
+            aboutModal.escaped = !!box && box.innerHTML.includes("&lt;script&gt;") && !box.innerHTML.includes("<script>");
+          } finally {
+            window.fetch = realFetch2;
+            Volt.App._closeModal(am);
+          }
+        } catch (e) { aboutModal.error = String((e && e.message) || e); }
+        aboutModal.allOk = aboutModal.present === true && aboutModal.hiddenBoot === true &&
+          aboutModal.opened === true && aboutModal.inertWhileOpen === true &&
+          aboutModal.versionShown === true && aboutModal.engineShown === true &&
+          aboutModal.changelogServed === true && aboutModal.closesClean === true &&
+          aboutModal.escaped === true && !aboutModal.error;
         // ── document fingerprint (backup matching) ────────────
         // every open document gets a content fingerprint (hash of sampled page
         // text) so Restore backup can match a renamed copy and reject a doctored
@@ -6379,7 +6437,7 @@ function runSmokeTest(w) {
               ocr.fpRenamedMatches === true && ocr.fpDoctoredRejected === true &&
               ocr.restored === true && !ocr.error;
             return {
-              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && ocr.allOk && office.allOk,
+              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && aboutModal.allOk && ocr.allOk && office.allOk,
               voice,
               bootstrap: boot,
               ocr,
@@ -6403,6 +6461,7 @@ function runSmokeTest(w) {
               serviceWorkerCache: swCache,
               indexHtmlCache: htmlCache,
               versionBanner: verBanner,
+              aboutModal,
               renderedPages: wraps,
               textSpans,
               doc: document.getElementById("sb-file").textContent,

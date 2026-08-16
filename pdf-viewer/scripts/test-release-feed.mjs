@@ -30,6 +30,14 @@ import { createReadStream, existsSync, mkdirSync, rmSync, copyFileSync, readdirS
 import { createHash } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+
+// CSC_LINK/CSC_KEY_PASSWORD from .env (real env vars win), so a --build here
+// produces a SIGNED installer + app-update.yml when a cert is configured —
+// the round-trip then exercises the updater's publisherName verification.
+require("./load-env.cjs")();
 
 const APP_ROOT = join(dirname(fileURLToPath(import.meta.url)), ".."); // pdf-viewer/
 const DIST = join(APP_ROOT, "dist");
@@ -57,7 +65,8 @@ function build() {
   note("building the installer (electron-builder --win nsis --publish never)…");
   const npx = process.platform === "win32" ? "npx.cmd" : "npx";
   const r = spawnSync(npx, ["electron-builder", "--win", "nsis", "--publish", "never"], {
-    cwd: APP_ROOT, stdio: "inherit", timeout: 600000,
+    // shell:true on win32 — spawning npx.cmd directly EINVALs on modern Node
+    cwd: APP_ROOT, stdio: "inherit", timeout: 600000, shell: process.platform === "win32",
   });
   if (r.status !== 0) fail("electron-builder failed (status " + r.status + ")");
 }
@@ -103,11 +112,48 @@ function makeFeed(installerPath, adv) {
 // would contain — so the gate is deterministic regardless of how dist/ was
 // produced. The client chain (latest.yml fetch → sha512 verify → download →
 // update-downloaded → banner) stays 100% real.
+const APP_UPDATE_ORIG = join(DIST, "win-unpacked", "resources", "app-update.yml.volt-orig");
+
 function ensureAppUpdateYml(feedUrl) {
   const resourcesDir = join(DIST, "win-unpacked", "resources");
   if (!existsSync(resourcesDir)) mkdirSync(resourcesDir, { recursive: true });
-  writeFileSync(join(resourcesDir, "app-update.yml"),
-    "provider: generic\nurl: " + feedUrl + "\nupdaterCacheDirName: volt-pdf-reader-updater\n");
+  const ymlPath = join(resourcesDir, "app-update.yml");
+  // PRESERVE publisherName from the build's own app-update.yml when present:
+  // a signed build writes it (win.verifyUpdateCodeSignature), and that is
+  // what arms the updater's Authenticode check. Without this the overwrite
+  // below would strip it and the round-trip would silently skip signature
+  // verification — passing even for unsigned/mismatched installers. With it:
+  //   • unsigned build      → no publisherName → updater skips check (as a
+  //     real unsigned release would), gate passes as before;
+  //   • signed + trusted    → Status 0 + subject match → download installs;
+  //   • signed + UNtrusted  → updater REJECTS the download (the dev-cert
+  //     case) — the gate fails exactly as a real user's updater would.
+  // The gate must never destroy its own input: earlier versions OVERWROTE the
+  // signed build's app-update.yml (stripping publisherName), so a second run
+  // would silently disarm signature verification and sign:check would start
+  // failing on a perfectly good signed build. Back up the PRISTINE file once
+  // and restore it after the run (main()'s finally).
+  if (!existsSync(APP_UPDATE_ORIG) && existsSync(ymlPath)) {
+    copyFileSync(ymlPath, APP_UPDATE_ORIG);
+  }
+  const pristine = existsSync(APP_UPDATE_ORIG) ? readFileSync(APP_UPDATE_ORIG, "utf8") : "";
+  let publisherLines = "";
+  let publisherNames = null;
+  try {
+    // js-yaml is a transitive dep of electron-updater (builder-util-runtime) —
+    // proper parsing, because electron-builder writes publisherName as a YAML
+    // LIST (a regex header-line grab silently drops the items and leaves a
+    // null value, which disarms verification).
+    const parsed = require("js-yaml").load(pristine);
+    if (parsed && Array.isArray(parsed.publisherName) && parsed.publisherName.length) {
+      publisherNames = parsed.publisherName.map(String);
+      publisherLines = "publisherName:\n" + publisherNames.map((p) => "  - " + JSON.stringify(p)).join("\n");
+    }
+  } catch (e) { /* no existing file (dist:dir / first build) or unparsable */ }
+  writeFileSync(ymlPath,
+    "provider: generic\nurl: " + feedUrl + "\nupdaterCacheDirName: volt-pdf-reader-updater\n" +
+    (publisherLines ? publisherLines + "\n" : ""));
+  return publisherNames ? "publisherName=" + JSON.stringify(publisherNames) : null;
 }
 
 function serveFeed() {
@@ -162,8 +208,13 @@ async function main() {
   const server = await serveFeed();
   const feedUrl = "http://127.0.0.1:" + server.address().port + "/";
   note("feed server on " + feedUrl);
-  ensureAppUpdateYml(feedUrl);
+  const armed = ensureAppUpdateYml(feedUrl);
+  if (armed) note("updater signature verification ARMED — " + armed + " (the feed's installer must be Authenticode-verified)");
+  else note("no publisherName in app-update.yml — updater skips signature verification (unsigned build)");
 
+  // NOTE: never process.exit() inside the try — the finally below MUST run to
+  // restore the build's app-update.yml (process.exit skips finally blocks).
+  let verdict = 1;
   try {
     const { code, text } = await runApp(feedUrl, adv);
     // SAFETY: the round-trip must never actually INSTALL the app — the feed's
@@ -172,25 +223,39 @@ async function main() {
     // instead of silently leaving Volt installed on the machine.
     const installProbe = join(process.env.LOCALAPPDATA || "", "Programs", "Volt");
     if (existsSync(installProbe)) {
-      fail("GATE SAFETY VIOLATION: " + installProbe + " appeared — the round-trip triggered a real install! " +
+      throw new Error("GATE SAFETY VIOLATION: " + installProbe + " appeared — the round-trip triggered a real install! " +
         "autoInstallOnAppQuit must stay disabled in --smoke-feed.");
     }
     const m = /SMOKE_RESULT\s+(\{.*\})/.exec(text);
     if (!m) {
-      fail("no SMOKE_RESULT in app output (exit " + code + "). Log tail:\n" + text.slice(-3000));
+      throw new Error("no SMOKE_RESULT in app output (exit " + code + "). Log tail:\n" + text.slice(-3000));
     }
     const result = JSON.parse(m[1]);
     const f = result.feed || {};
     if (result.ok && f.bannerShown && f.pendingVersion === adv && f.updaterEnabled) {
       ok("round-trip verified: updater engaged → downloaded " + adv + " → version banner " +
         "(restart=" + f.restartVisible + ", downloadHidden=" + f.downloadHidden + ", countdown=" + f.countdown + ")");
-      process.exit(0);
+      verdict = 0;
+    } else {
+      console.error("❌ round-trip FAILED: " + JSON.stringify(result));
     }
-    console.error("❌ round-trip FAILED: " + JSON.stringify(result));
-    process.exit(1);
+  } catch (e) {
+    console.error("❌ round-trip FAILED: " + ((e && e.message) || e));
   } finally {
     server.close();
+    // restore the build's own app-update.yml so a signed dist/ stays intact
+    // for sign:check / future runs (and remove the pristine backup).
+    try {
+      if (existsSync(APP_UPDATE_ORIG)) {
+        copyFileSync(APP_UPDATE_ORIG, join(DIST, "win-unpacked", "resources", "app-update.yml"));
+        rmSync(APP_UPDATE_ORIG, { force: true });
+      }
+    } catch (e) {
+      console.error("⚠ could not restore app-update.yml: " + e.message);
+      verdict = 1;
+    }
   }
+  process.exit(verdict);
 }
 
 main().catch((e) => fail((e && e.stack) || String(e)));

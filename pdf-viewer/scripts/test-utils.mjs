@@ -227,5 +227,135 @@ t("vbs: visible console (style 1) rejected", launchCheck.checkVbsLauncher("Optio
 t("vbs: wrong target rejected", launchCheck.checkVbsLauncher("Option Explicit\r\nDim s\r\nSet s = CreateObject(\"WScript.Shell\")\r\ns.Run \"other.cmd\", 0, False\r\n").some((e) => /start-volt-app\.cmd/i.test(e)));
 t("vbs: non-ASCII rejected", launchCheck.checkVbsLauncher("Option Explicit\r\ns.Run \"start-volt-app.cmd\", 0, False \u2014 em dash\r\n").some((e) => /non-ASCII/i.test(e)));
 
+// ── version / changelog helpers ──
+t("cmpVersions: equal", U.cmpVersions("1.2.3", "1.2.3") === 0);
+t("cmpVersions: greater / less", U.cmpVersions("2.0.0", "1.9.9") > 0 && U.cmpVersions("0.9.0", "1.0.0") < 0);
+t("cmpVersions: major beats minor (1.10.0 > 1.9.9)", U.cmpVersions("1.10.0", "1.9.9") > 0);
+t("cmpVersions: malformed treated as 0 parts (never throws)", U.cmpVersions("", "0.0.0") === 0 && U.cmpVersions("x.y.z", "0.0.0") === 0);
+t("cmpVersions: antisymmetric", U.cmpVersions("1.0.0", "1.0.1") < 0 && U.cmpVersions("1.0.1", "1.0.0") > 0);
+
+t("changelogSections: parses ## x.y.z pairs in order", (() => {
+  const s = U.changelogSections("intro\n\n## 1.1.0\n- a\n\n## 1.0.0\n- b\n");
+  return s.length === 2 && s[0].ver === "1.1.0" && /- a/.test(s[0].body) && s[1].ver === "1.0.0" && /- b/.test(s[1].body);
+})());
+t("changelogSections: empty / no headings → []", U.changelogSections("").length === 0 && U.changelogSections("just text\nno versions").length === 0);
+
+t("bulletItems: strips - and * markers, trims", JSON.stringify(U.bulletItems("  - first\n* second\nplain\n  -  third  ")) === JSON.stringify(["first", "second", "third"]));
+t("bulletItems: empty / bullet-less body → []", U.bulletItems("").length === 0 && U.bulletItems("no bullets here").length === 0);
+
+// changelogHtml — the version-banner tooltip builder (pure; current/served
+// are passed in, so the window.__VOLT_VERSION read stays in app.js)
+const CH = "## 2.0.0\n- big rewrite\n\n## 1.1.0\n- list fix\n\n## 1.0.0\n- initial\n";
+t("changelogHtml: newer than current, ≤ served, excludes current", (() => {
+  const h = U.changelogHtml(CH, "1.0.0", "2.0.0");
+  return h.includes("v1.1.0") && h.includes("v2.0.0") && h.includes("list fix") && h.includes("big rewrite") && !h.includes("v1.0.0");
+})());
+t("changelogHtml: escapes bullet content", (() => {
+  const h = U.changelogHtml("## 2.0.0\n- <script>alert(1)</script>\n", "1.0.0", "2.0.0");
+  return h.includes("&lt;script&gt;") && !h.includes("<script>");
+})());
+t("changelogHtml: downgrade falls back to the served section", (() => {
+  const h = U.changelogHtml(CH, "3.0.0", "2.0.0");
+  return h.includes("v2.0.0") && h.includes("big rewrite") && !h.includes("v1.1.0");
+})());
+t("changelogHtml: at current == served, the served section still shows (original fallback)", U.changelogHtml(CH, "2.0.0", "2.0.0").includes("v2.0.0"));
+t("changelogHtml: served version absent from changelog → empty", U.changelogHtml(CH, "2.0.0", "9.9.9") === "");
+t("changelogHtml: empty md → empty", U.changelogHtml("", "1.0.0", "2.0.0") === "");
+t("changelogHtml: unknown current shows all ≤ served", (() => {
+  const h = U.changelogHtml(CH, "garbage", "1.1.0");
+  return h.includes("v1.1.0") && h.includes("v1.0.0") && !h.includes("v2.0.0");
+})());
+
+// aboutChangelogHtml — the About modal's "what this version changed" (pure;
+// same bullet-rendering path as changelogHtml)
+t("aboutChangelogHtml: renders the section matching the version", (() => {
+  const h = U.aboutChangelogHtml(CH, "1.1.0");
+  return h.includes("What's new in v1.1.0") && h.includes("list fix") && !h.includes("big rewrite");
+})());
+t("aboutChangelogHtml: unknown version falls back to the first section", (() => {
+  const h = U.aboutChangelogHtml(CH, "dev");
+  return h.includes("v2.0.0") && h.includes("big rewrite");
+})());
+t("aboutChangelogHtml: escapes the version and bullet content", (() => {
+  const h = U.aboutChangelogHtml("## 2.0.0\n- <script>alert(1)</script>\n", "2.0.0");
+  return h.includes("&lt;script&gt;") && !h.includes("<script>");
+})());
+t("aboutChangelogHtml: section without bullets → empty", U.aboutChangelogHtml("## 2.0.0\nplain text, no bullets\n", "2.0.0") === "");
+t("aboutChangelogHtml: empty md → empty", U.aboutChangelogHtml("", "1.0.0") === "" && U.aboutChangelogHtml(null, "1.0.0") === "");
+
+// ── page-selection range math (lo/hi clamping) ──
+t("clampedRange: ordered and reversed give the same lo/hi", (() => {
+  const a = U.clampedRange(2, 5, 1, 6), b = U.clampedRange(5, 2, 1, 6);
+  return a.lo === 2 && a.hi === 5 && b.lo === 2 && b.hi === 5;
+})());
+t("clampedRange: stale anchor below clamps to min", (() => {
+  const r = U.clampedRange(0, 3, 1, 6);
+  return r.lo === 1 && r.hi === 3;
+})());
+t("clampedRange: stale anchor above clamps to max", (() => {
+  const r = U.clampedRange(7, 3, 1, 6);
+  return r.lo === 3 && r.hi === 6;
+})());
+t("clampedRange: single page", (() => {
+  const r = U.clampedRange(4, 4, 1, 6);
+  return r.lo === 4 && r.hi === 4;
+})());
+t("clampedRange: 0-based manager bounds", (() => {
+  const r = U.clampedRange(2, 0, 0, 3);
+  return r.lo === 0 && r.hi === 2;
+})());
+t("clampedRange: both out of bounds → empty range (lo > hi)", (() => {
+  const r = U.clampedRange(9, 9, 0, 3);
+  return r.lo > r.hi;
+})());
+
+// ── thumbnail scale ──
+t("thumbScale: letter page (612pt) fits the 120px target", U.thumbScale(612) === Math.min(0.22, 120 / 612));
+t("thumbScale: wide page scales below the cap", U.thumbScale(2000) === 0.06);
+t("thumbScale: narrow page hits the 0.22 cap", U.thumbScale(300) === 0.22);
+t("thumbScale: zero / missing width falls back to 600pt", U.thumbScale(0) === 0.2 && U.thumbScale(null) === 0.2);
+t("thumbScale: custom target honored (and cap still wins)", U.thumbScale(1200, 0.22, 240) === 0.2 && U.thumbScale(612, 0.22, 240) === 0.22);
+
+// ── restore-summary rows ──
+t("restoreSummaryRows: annotation line with marks + notes", (() => {
+  const rows = U.restoreSummaryRows({ annCount: 3, notes: 1 });
+  return rows[0].k === "Annotations" && rows[0].v === "3 annotations — 2 marks · 1 note";
+})());
+t("restoreSummaryRows: single annotation, no notes", (() => {
+  const r = U.restoreSummaryRows({ annCount: 1, notes: 0 }).find((x) => x.k === "Annotations");
+  return r.v === "1 annotation — 1 mark";
+})());
+t("restoreSummaryRows: zero annotations", U.restoreSummaryRows({ annCount: 0 }).find((x) => x.k === "Annotations").v === "0 annotations");
+t("restoreSummaryRows: AI row builds from effective settings", (() => {
+  const rows = U.restoreSummaryRows({
+    annCount: 0, aiInBackup: true,
+    ai: { model: "qwen3", maxContextChars: 8000, systemPrompt: "Be brief." },
+  });
+  const ai = rows.find((x) => x.k === "AI overrides");
+  return ai.v.includes("Model: qwen3") && ai.v.includes("Context: 8,000 chars") && ai.v.includes("Be brief.") &&
+    ai.title.includes("Model: qwen3");
+})());
+t("restoreSummaryRows: AI row with no effective values", (() => {
+  const rows = U.restoreSummaryRows({ annCount: 0, aiInBackup: true, ai: {} });
+  return rows.find((x) => x.k === "AI overrides").v === "None in this backup";
+})());
+t("restoreSummaryRows: AI not in backup", U.restoreSummaryRows({ annCount: 0 }).find((x) => x.k === "AI overrides").v === "Not in this backup");
+t("restoreSummaryRows: chat in backup (plural + singular)", (() => {
+  const rows = U.restoreSummaryRows({ annCount: 0, chatInBackup: true, chatCount: 2 });
+  return rows.find((x) => x.k === "Chat").v === "2 messages" &&
+    U.restoreSummaryRows({ annCount: 0, chatInBackup: true, chatCount: 1 }).find((x) => x.k === "Chat").v === "1 message";
+})());
+t("restoreSummaryRows: chat not in backup", U.restoreSummaryRows({ annCount: 0 }).find((x) => x.k === "Chat").v === "Not in this backup");
+
+// ── small display helpers ──
+t("stripPdfExt: strips .pdf case-insensitively, once", U.stripPdfExt("report.PDF") === "report" && U.stripPdfExt("doc.pdf.pdf") === "doc.pdf");
+t("stripPdfExt: no suffix unchanged", U.stripPdfExt("notes") === "notes" && U.stripPdfExt("") === "");
+t("pageSizeLabel: 612×792pt → 8.5 × 11 in", U.pageSizeLabel(612, 792) === "8.5 × 11 in");
+t("pageSizeLabel: trailing zeros trimmed", U.pageSizeLabel(72, 144) === "1 × 2 in");
+t("pageSizeLabel: missing dims → empty", U.pageSizeLabel(0, 792) === "" && U.pageSizeLabel(null, 792) === "");
+t("trunc: short passes through", U.trunc("short", 10) === "short");
+t("trunc: long gets ellipsis", U.trunc("abcdefghij", 5) === "abcde…");
+t("trunc: trims trailing whitespace before the ellipsis", U.trunc("ab cd  ", 3) === "ab…");
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

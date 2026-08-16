@@ -387,6 +387,178 @@
       return lines;
     },
 
+    /* ── version / changelog helpers (pure — unit-tested) ──── */
+    /** Semantic x.y.z version comparator: returns <0 / 0 / >0. Missing or
+        non-numeric parts compare as 0, so malformed strings never throw. */
+    cmpVersions(a, b) {
+      const pa = String(a == null ? "" : a).split(".").map(Number);
+      const pb = String(b == null ? "" : b).split(".").map(Number);
+      for (let i = 0; i < 3; i++) {
+        const x = pa[i] || 0, y = pb[i] || 0;
+        if (x !== y) return x - y;
+      }
+      return 0;
+    },
+
+    /** Split a CHANGELOG.md into (version, body) pairs on `## x.y.z` headings
+        (the format gen-sw.mjs stamps and the version banner diffs). Returns
+        [{ ver, body }] in document order; [] for empty input or no headings. */
+    changelogSections(md) {
+      if (!md) return [];
+      const sections = [];
+      const re = /^##\s+(\d+\.\d+\.\d+)\s*$/gm;
+      let m, lastIdx = -1, lastVer = null;
+      while ((m = re.exec(md))) {
+        if (lastVer) sections.push({ ver: lastVer, body: md.slice(lastIdx, m.index) });
+        lastVer = m[1];
+        lastIdx = re.lastIndex;
+      }
+      if (lastVer) sections.push({ ver: lastVer, body: md.slice(lastIdx) });
+      return sections;
+    },
+
+    /** Extract the bullet items from a changelog body: trimmed lines starting
+        with "- " or "* ", returned WITHOUT the marker. The caller decides how
+        to render them (the version banner / About modal escape + wrap). */
+    bulletItems(body) {
+      return String(body == null ? "" : body).split(/\r?\n/).map((l) => l.trim())
+        .filter((l) => /^[-*]\s+/.test(l)).map((l) => l.replace(/^[-*]\s+/, ""));
+    },
+
+    /** Shared bullet-list HTML for a changelog section body: escaped <li>
+        items in a <ul>, or "" when the body has no bullets. Both the version
+        banner's tooltip and the About modal render through this — one path,
+        so escaping and markup can't drift between the two views. */
+    _changelogBulletList(body) {
+      const items = Utils.bulletItems(body);
+      if (!items.length) return "";
+      return "<ul>" + items.map((i) => "<li>" + Utils.esc(i) + "</li>").join("") + "</ul>";
+    },
+
+    /** Build the version-banner tooltip's HTML: the CHANGELOG sections newer
+        than `current` and not newer than `served`, escaped, as <li> bullets.
+        PURE — callers read window.__VOLT_VERSION / the served version and pass
+        them in. On a downgrade (or unknown current) falls back to the served
+        section. Never throws (the tooltip must never break the app). */
+    changelogHtml(md, current, served) {
+      if (!md) return "";
+      const sections = Utils.changelogSections(md);
+      if (!sections.length) return "";
+      const cur = (typeof current === "string" && /^\d+\.\d+\.\d+$/.test(current)) ? current : null;
+      const svd = (typeof served === "string" && /^\d+\.\d+\.\d+$/.test(served)) ? served : null;
+      let wanted = sections.filter((s) =>
+        (cur ? Utils.cmpVersions(s.ver, cur) > 0 : true) &&
+        (svd ? Utils.cmpVersions(s.ver, svd) <= 0 : true));
+      if (!wanted.length && svd) {
+        // e.g. a downgrade or the current version unknown — show the served one
+        const exact = sections.find((s) => s.ver === svd);
+        if (exact) wanted = [exact];
+      }
+      if (!wanted.length) return "";
+      return wanted.map((s) =>
+        (wanted.length === 1
+          ? '<div class="ver-tip-title">What\'s new in v' + Utils.esc(s.ver) + "</div>"
+          : '<div class="ver-tip-sec"><b>v' + Utils.esc(s.ver) + "</b>") + Utils._changelogBulletList(s.body) +
+        (wanted.length > 1 ? "</div>" : "")).join("");
+    },
+
+    /** The About modal's "what this version changed" HTML: the CHANGELOG
+        section for `version` (falling back to the first section when the
+        version is unknown, e.g. "dev" builds) rendered as
+        '<h4>What\'s new in vX</h4>' + the shared bullet list. Returns "" when
+        there is nothing to show (empty changelog, or the section has no
+        bullets). PURE — the caller fetches the markdown and reads the version.
+        Never throws (the modal must never break the app). */
+    aboutChangelogHtml(md, version) {
+      if (!md) return "";
+      const sections = Utils.changelogSections(md);
+      if (!sections.length) return "";
+      const cur = (typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version)) ? version : null;
+      const idx = sections.findIndex((s) => s.ver === cur);
+      const sec = (idx >= 0 ? sections[idx] : sections[0]);
+      const list = Utils._changelogBulletList(sec.body);
+      if (!list) return "";
+      return '<h4>What\'s new in v' + Utils.esc(sec.ver) + "</h4>" + list;
+    },
+
+    /* ── page-selection + thumbnails + restore-summary (pure — unit-tested) ── */
+    /** The lo/hi of an inclusive contiguous selection [anchor, current],
+        clamped to [min, max] and ordered — the shared math behind Shift+click
+        range selection in the Pages manager (0-based) and the sidebar
+        thumbnails (1-based). A stale anchor outside the bounds clamps to the
+        edge; an anchor and target BOTH outside the same edge yield lo > hi,
+        an empty range — matching the original loops exactly. */
+    clampedRange(anchor, current, min, max) {
+      const lo = Math.max(min, Math.min(anchor, current));
+      const hi = Math.min(max, Math.max(anchor, current));
+      return { lo, hi };
+    },
+
+    /** Thumbnail render scale: the pdf.js scale that fits a page `pageWidth`
+        points wide into the ~120px thumb column — a width-ratio capped at
+        0.22 so narrow pages don't get oversized thumbs. Unknown / zero
+        widths fall back to 600pt (a letter-ish page). */
+    thumbScale(pageWidth, cap = 0.22, target = 120, fallback = 600) {
+      return Math.min(cap, target / (pageWidth || fallback));
+    },
+
+    /** The post-restore summary card's rows (what the restore actually
+        landed), given the plain facts — the DOM / Volt module reads stay in
+        app.js. Returns [{k, v, title}] in display order. PURE — never throws.
+        annCount is the total annotation count, notes the note-annotations
+        among them (marks = annCount - notes); `ai` is the EFFECTIVE doc
+        settings ({model, maxContextChars, systemPrompt}) shown when the
+        backup carried aiSettings; chatCount is the live message count when
+        the backup carried chatHistory. */
+    restoreSummaryRows({ annCount = 0, notes = 0, ai = null, aiInBackup = false, chatInBackup = false, chatCount = 0 } = {}) {
+      const p = (n) => (n === 1 ? "" : "s");
+      const marks = annCount - notes;
+      let annTxt = annCount + " annotation" + p(annCount);
+      if (annCount) {
+        annTxt += " — " + marks + " mark" + p(marks);
+        if (notes) annTxt += " · " + notes + " note" + p(notes);
+      }
+      const rows = [{ k: "Annotations", v: annTxt, title: annTxt }];
+      if (aiInBackup) {
+        const eff = (ai && typeof ai === "object") ? ai : {};
+        const parts = [];
+        if (eff.model) parts.push("Model: " + eff.model);
+        if (eff.maxContextChars) parts.push("Context: " + Number(eff.maxContextChars).toLocaleString() + " chars");
+        if (eff.systemPrompt) parts.push("Prompt: “" + Utils.trunc(eff.systemPrompt, 64) + "”");
+        const v = parts.length ? parts.join(" · ") : "None in this backup";
+        rows.push({ k: "AI overrides", v, title: parts.join("\n") || v });
+      } else {
+        rows.push({ k: "AI overrides", v: "Not in this backup", title: "This backup didn't include AI overrides" });
+      }
+      if (chatInBackup) {
+        rows.push({ k: "Chat", v: chatCount + " message" + p(chatCount), title: chatCount + " message" + p(chatCount) });
+      } else {
+        rows.push({ k: "Chat", v: "Not in this backup", title: "This backup didn't include chat history" });
+      }
+      return rows;
+    },
+
+    /* ── small display helpers (pure — unit-tested) ────────── */
+    /** "report.PDF" → "report" — the document-name base used for export
+        filenames; returns the input unchanged without a .pdf suffix. */
+    stripPdfExt(name) {
+      return String(name == null ? "" : name).replace(/\.pdf$/i, "");
+    },
+
+    /** PDF points → "W × H in" label (72pt = 1in), trailing zeros trimmed.
+        Returns "" when either dimension is missing. */
+    pageSizeLabel(w, h) {
+      if (!w || !h) return "";
+      const f = (pt) => (Math.round((pt / 72) * 100) / 100).toString().replace(/\.?0+$/, "");
+      return f(w) + " × " + f(h) + " in";
+    },
+
+    /** "long text" → "long te…" when longer than n chars. */
+    trunc(s, n) {
+      const str = String(s == null ? "" : s);
+      return str.length > n ? str.slice(0, n).trimEnd() + "…" : str;
+    },
+
     /** inline markdown: bold, italic, code, links */
     inline(s) {
       return s

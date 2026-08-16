@@ -26,6 +26,7 @@
 const { execFileSync } = require("node:child_process");
 const { existsSync, readdirSync, readFileSync } = require("node:fs");
 const { join } = require("node:path");
+require("./load-env.cjs")(); // CSC_LINK/CSC_KEY_PASSWORD from .env (env vars win)
 
 const ROOT = join(__dirname, "..");
 const DIST = join(ROOT, "dist");

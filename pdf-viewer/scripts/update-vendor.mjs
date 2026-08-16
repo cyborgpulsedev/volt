@@ -632,7 +632,12 @@ async function main() {
     if (SKIP_SMOKE) return;
     banner("smoke test (Electron)");
     const smoke = runSmoke();
-    console.log(smoke.ok ? "✓ smoke passed" : "✗ " + smoke.reason);
+    if (smoke.ok) console.log("✓ smoke passed");
+    else {
+      console.log("✗ " + smoke.reason);
+      const fails = summarizeSmokeFailures(smoke.out || "");
+      if (fails) console.log("  failing stages: " + fails);
+    }
     if (!api.pdfjs.ok || !api.pdflib.ok || !(api.tesseract && api.tesseract.ok) || !smoke.ok) { fail("vendor verification failed"); return; }
     console.log("\n✓ vendor is healthy");
     if (CHECK_ELECTRON) await checkElectronDeep(); // --check --check-electron runs both

@@ -110,7 +110,10 @@ jobs:
         run: npm run test:watch
 
       - name: Vendor integrity (vendored pdf.js / pdf-lib / Tesseract + smoke)
-        run: npm run check:vendor
+        # --no-focus: the vendor smoke defaults to the FOCUSED --smoke, whose
+        # real-keyboard stage can't work on a VM — same rule as the rest of
+        # the battery (the focused smoke stays a local/desktop check)
+        run: npm run check:vendor -- --no-focus
 
       - name: PWA render smoke (no preload bridge, headless)
         run: npm run smoke:browser:headless
@@ -130,8 +133,14 @@ jobs:
     # exe not signed by the same publisher). Without the secrets the job runs
     # unsigned — sign:check soft-skips below.
     env:
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      # DELIBERATELY NO CSC_LINK here: a configured cert makes the round-trip
+      # ARMED (publisherName in app-update.yml), and the updater rejects
+      # untrusted chains — with the dev-cert placeholder that fails CI. The
+      # signed round-trip is covered by the release workflow (real cert). If
+      # a real cert is ever configured here, restore CSC_LINK/CSC_KEY_PASSWORD.
+      #
+      # CSC_LINK: ${{ secrets.CSC_LINK }}
+      # CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 

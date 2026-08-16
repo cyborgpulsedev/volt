@@ -71,12 +71,14 @@ function build() {
   if (r.status !== 0) fail("electron-builder failed (status " + r.status + ")");
 }
 
+// Returns null when no installer exists — NOT fail(): the caller probes this
+// BEFORE deciding to build, and fail() exits the process (uncatchable), which
+// used to kill `--build` runs on a clean checkout (no dist/ yet).
 function findInstaller() {
   let files = [];
   try { files = readdirSync(DIST).filter((f) => /^Volt-Setup-\d+\.\d+\.\d+\.exe$/.test(f)); } catch (e) { /* no dist */ }
-  if (!files.length) fail("no NSIS installer in dist/ — run with --build (or npm run dist) first");
   files.sort();
-  return join(DIST, files[files.length - 1]);
+  return files.length ? join(DIST, files[files.length - 1]) : null;
 }
 
 // Publish the scratch feed: copy the installer under the advertised version
@@ -194,12 +196,13 @@ async function main() {
   const adv = advertisedVersion(installed);
   note("installed version " + installed + " → feed advertises " + adv);
 
-  const installerExists = (() => { try { return !!findInstaller(); } catch (e) { return false; } })();
-  if (shouldBuild || !existsSync(UNPACKED_EXE) || !installerExists) {
+  const hasInstaller = (() => { try { return !!findInstaller(); } catch (e) { return false; } })();
+  if (shouldBuild || !existsSync(UNPACKED_EXE) || !hasInstaller) {
     if (!shouldBuild) note("dist/ missing or incomplete — building first");
     build();
   }
   const installer = findInstaller();
+  if (!installer) fail("no NSIS installer in dist/ after the build — check electron-builder output");
   if (!existsSync(UNPACKED_EXE)) fail("dist/win-unpacked/Volt.exe missing after build");
 
   const feed = makeFeed(installer, adv);

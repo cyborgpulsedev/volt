@@ -17,8 +17,11 @@
 #                         auto-updater feed is reachable at all)
 #
 #   Before tagging: bump VERSION + package.json `version` + CHANGELOG
-#   (README "Releasing a version"); the guard step below refuses a
-#   tag/version mismatch, and `npm run release` refuses unsigned.
+#   (README "Releasing a version"); the guard steps below refuse a
+#   tag/version mismatch, a tag that doesn't point at the CURRENT tip of
+#   origin/main (so a stale re-tag can't ship without the latest fixes), a
+#   tag whose checked-in sw.js / index.html are stale (regenerate with
+#   `npm run gen:sw`), and `npm run release` refuses unsigned.
 #   ═══════════════════════════════════════════════════════════════
 name: Release (signed)
 
@@ -40,12 +43,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fail fast (before the ~3 min dependency install): the tag must point
+      # at the CURRENT tip of origin/main. Re-tagging an old commit (e.g.
+      # re-pointing v1.0.0 at a pre-upgrade SHA) would publish a release
+      # without the latest fixes — and the version-match guard can't catch
+      # it, because the version numbers still line up.
+      - name: Guard — tag points at current main HEAD
+        run: |
+          git fetch origin main --depth=1
+          $tagCommit = (git rev-parse HEAD).Trim()
+          $mainCommit = (git rev-parse FETCH_HEAD).Trim()
+          if ($tagCommit -ne $mainCommit) {
+            throw "tag ${{ github.ref_name }} points at $tagCommit, but origin/main is at $mainCommit — re-cut the tag at current main so the release carries the latest fixes (see README 'Releasing a version')."
+          }
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           # repo-root-relative — the lockfile lives under pdf-viewer/
           cache-dependency-path: pdf-viewer/package-lock.json
+
+      # Fail fast (before the dependency install): the tag's checked-in
+      # sw.js + index.html must match what the generator derives from the
+      # CURRENT tree. A stale artifact — an asset edited, the derived files
+      # never regenerated — would ship a worker that precaches old files
+      # under an old name. The smoke's artifact gates catch this on every
+      # push; this guard catches it on a tag even if the tag predates a
+      # commit that would have failed CI.
+      - name: Guard — generated artifacts match the tree (no stale sw.js / index.html)
+        run: npm run check:sw
 
       - name: Install dependencies (no postinstall scripts)
         run: npm ci --no-audit --no-fund --ignore-scripts

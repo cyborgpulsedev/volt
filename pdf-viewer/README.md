@@ -1517,7 +1517,19 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
    `window.__VOLT_VERSION` tells a running page which version it is).
 3. Run the suites (see Development) — the smoke's banner stage asserts the
    served `CHANGELOG.md` contains the current version's section, so a release
-   that forgets its changelog entry fails the gate.
+   that forgets its changelog entry fails the gate. `npm run check:sw`
+   (`node scripts/gen-sw.mjs --check`) also verifies the checked-in `sw.js`
+   and `index.html` match what the generator derives from the current files
+   — a stale artifact fails here before any tag is cut.
+4. Tag the **current** tip of `main` (`git tag -a v<x.y.z> … && git push
+   origin v<x.y.z>`). The release workflow fails fast if the tag doesn't
+   point at the current `origin/main` HEAD — re-tagging an old commit (e.g.
+   re-pointing `v1.0.0` at a pre-upgrade SHA) would publish a release
+   without the latest fixes, and the version-match guard alone can't catch
+   it. Re-cut the tag at current main (or cut a new version) rather than
+   force-pushing a stale tag. The workflow also re-runs the artifact-drift
+   check above on the tag's own tree, so a tag can never ship a worker that
+   precaches old files under an old name.
 
 ## Package release (Windows installer)
 

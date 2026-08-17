@@ -20,6 +20,7 @@
     "test:release-feed": "node scripts/test-release-feed.mjs",
     "check:launchers": "node ../scripts/check-launchers.cjs",
     "gen:sw": "node scripts/gen-sw.mjs --write",
+    "check:sw": "node scripts/gen-sw.mjs --check",
     "auto:vendor": "node scripts/auto-update.cjs --smoke-exe \"node_modules/electron/dist/electron.exe\"",
     "dist": "node scripts/run-builder.cjs --win nsis",
     "dist:dir": "node scripts/run-builder.cjs --win dir",

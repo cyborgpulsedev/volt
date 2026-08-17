@@ -16,6 +16,12 @@
 //   Usage (from pdf-viewer/):
 //     node scripts/gen-sw.mjs            print the current cache name
 //     node scripts/gen-sw.mjs --write    (re)write sw.js + stamped index.html
+//     node scripts/gen-sw.mjs --check    verify the checked-in artifacts match
+//                                        the current files (drift guard; exit 1
+//                                        on stale sw.js / index.html — the
+//                                        release workflow runs this on every
+//                                        tag, so a tag can never ship a worker
+//                                        that precaches old files)
 //   ═══════════════════════════════════════════════════════════════ */
 "use strict";
 
@@ -269,6 +275,29 @@ if (isMain) {
   if (args.has("--write")) {
     const cache = writeArtifacts();
     console.log("sw.js + index.html written — cache " + cache);
+  } else if (args.has("--check")) {
+    // Drift guard: the checked-in sw.js + index.html must match what the
+    // generator derives from the CURRENT tree. A stale artifact — an asset
+    // edited but never regenerated — would ship a worker that precaches old
+    // files under an old name and index.html stamps that don't bust the HTTP
+    // cache. Byte-exact like the regression guard's own identity assertions:
+    // the artifacts are generated, never hand-edited, so any difference means
+    // the tree changed without a regeneration. Exit 1 with a clear diff.
+    const wantSw = renderSw();
+    const wantHtml = renderIndexHtml();
+    const diskSw = readFileSync(SW_PATH, "utf8");
+    const diskHtml = readFileSync(INDEX_PATH, "utf8");
+    const diskCache = (diskSw.match(/const CACHE = "([^"]+)"/) || [])[1] || null;
+    const stale = [];
+    if (diskSw !== wantSw) stale.push("sw.js (disk CACHE " + diskCache + " ≠ generated " + cacheName() + ")");
+    if (diskHtml !== wantHtml) stale.push("index.html (?v= stamps / version differ from the current files)");
+    if (stale.length) {
+      console.error("❌ stale generated artifact(s) — sw.js / index.html don't match the current files:");
+      for (const s of stale) console.error("   - " + s);
+      console.error("   Fix: run `node scripts/gen-sw.mjs --write` and commit sw.js + index.html together with the asset change.");
+      process.exit(1);
+    }
+    console.log("✓ sw.js + index.html match the current files (cache " + cacheName() + ")");
   } else {
     console.log(cacheName());
   }

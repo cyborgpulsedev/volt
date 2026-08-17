@@ -1041,8 +1041,9 @@ async function validateOfficeStage(docxPath, xlsxPath, pptxPath, subsetPath, sub
 async function toolbarResizeStage(w) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const js = (code) => w.webContents.executeJavaScript(code);    const out = { ok: false, error: null, sizes: [] };
-  const original = w.getSize();
-  try {
+    let resizeOk = true; // every setSize must actually arrive at its target width
+    const original = w.getSize();
+    try {
     // the desktop window's minWidth 900 would clamp every sub-900 setSize —
     // relax it so the browser-width sizes genuinely exercise tier 4 (restored
     // in finally, so later stages run in the standard window)
@@ -1053,8 +1054,46 @@ async function toolbarResizeStage(w) {
     // can never reach (its floor is 900x600)
     const sizes = [[1280, 900], [1100, 700], [1000, 650], [960, 640], [900, 620], [840, 620], [760, 580]];
     for (const [w_, h] of sizes) {
-      w.setSize(w_, h);
-      await sleep(450); // layout + the app's debounced resize handler settle
+      // The resize must actually ARRIVE before we assert the toolbar at that
+      // width: setSize is async, and a dropped/coalesced one (seen on loaded
+      // CI runners) leaves the previous width in place — which then silently
+      // fails the tier expectations and cascades into the menu-keyboard
+      // probes below. Poll the renderer for the target inner width (outer
+      // minus the platform frame chrome, measured in the renderer), retry the
+      // setSize once, and only record the size once it settles.
+      const settled = await js(`(async () => {
+        const frame = window.outerWidth - window.innerWidth;
+        const target = ${w_} - frame;
+        const reach = (timeout) => new Promise((resolve) => {
+          const start = Date.now();
+          const tick = () => {
+            if (window.innerWidth === target) return resolve(true);
+            if (Date.now() - start > timeout) return resolve(false);
+            setTimeout(tick, 40);
+          };
+          tick();
+        });
+        if (await reach(2000)) return { ok: true };
+        return { ok: false, inner: window.innerWidth, target }; // retried by the caller
+      })()`);
+      if (!settled.ok) {
+        w.setSize(w_, h); // first attempt was dropped/coalesced — try again
+        const retry = await js(`(async () => {
+          const frame = window.outerWidth - window.innerWidth;
+          const target = ${w_} - frame;
+          const start = Date.now();
+          while (Date.now() - start < 2000) {
+            if (window.innerWidth === target) return { ok: true };
+            await new Promise((r) => setTimeout(r, 40));
+          }
+          return { ok: false, inner: window.innerWidth, target };
+        })()`);
+        if (!retry.ok) {
+          resizeOk = false;
+          out.error = "smoke could not resize the window to " + w_ + "px " +
+            "(inner stayed " + retry.inner + ", target " + retry.target + ") — ";
+        }
+      }
       const m = await js(`(() => {
         const tb = document.getElementById("toolbar");
         if (!tb) return { missing: true };
@@ -1231,7 +1270,7 @@ async function toolbarResizeStage(w) {
       menuCheck.kbSwitchTools === true && menuCheck.kbSwitchBack === true && menuCheck.kbAltB === true &&
       menuCheck.kbArrowToExport === true && menuCheck.kbEscClose === true &&
       menuCheck.kbAltBOn === true && menuCheck.kbAltBOff === true;
-    out.ok = out.sizes.length === sizes.length && out.sizes.every((s) => s.controlsVisible && !s.overflow && s.tierOk) && menuOk;
+    out.ok = resizeOk && out.sizes.length === sizes.length && out.sizes.every((s) => s.controlsVisible && !s.overflow && s.tierOk) && menuOk;
   } catch (e) {
     out.error = String((e && e.message) || e);
   } finally {

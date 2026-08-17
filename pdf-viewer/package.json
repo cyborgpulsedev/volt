@@ -96,6 +96,9 @@
         "owner": "cyborgpulsedev",
         "repo": "volt"
       }
-    ]
+    ],
+    "releaseInfo": {
+      "releaseNotesFile": "release-notes.md"
+    }
   }
 }

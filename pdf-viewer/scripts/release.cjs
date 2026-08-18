@@ -21,6 +21,17 @@
    for CI secrets). Without a cert, `npm run dist` still works for
    dev/private builds.
 
+   SCRATCH UNSIGNED RELEASES (feed-mechanics testing only): set
+   VOLT_ALLOW_UNSIGNED=1 to skip the certificate requirement, the
+   self-signed guard, and the sign:check gate, publishing an UNSIGNED
+   build. This is the deliberate escape hatch behind the release
+   workflow's scratch_unsigned input — the ONLY legitimate use is
+   proving the publish/feed pipeline works before a real cert lands
+   (e.g. that the auto-update feed URL serves a real latest.yml). An
+   unsigned release means SmartScreen warnings for every user and NO
+   updater signature verification — delete the scratch release after
+   verifying.
+
    Usage:  npm run release [electron-builder args…]
    ═══════════════════════════════════════════════════════════════ */
 "use strict";
@@ -28,8 +39,16 @@ const { spawnSync } = require("node:child_process");
 const { join } = require("node:path");
 require("./load-env.cjs")(); // CSC_LINK/CSC_KEY_PASSWORD from .env (env vars win)
 
+// SCRATCH UNSIGNED releases: VOLT_ALLOW_UNSIGNED=1 skips the certificate
+// requirement, the cert guard, and the sign:check gate — the deliberate
+// escape hatch behind the release workflow's scratch_unsigned input. The
+// ONLY legitimate use is proving the publish/feed pipeline before a real
+// cert lands; an unsigned release means SmartScreen warnings and NO updater
+// signature verification for every user.
+const allowUnsigned = process.env.VOLT_ALLOW_UNSIGNED === "1";
+
 const cscLink = (process.env.WIN_CSC_LINK || process.env.CSC_LINK || "").trim();
-if (!cscLink) {
+if (!cscLink && !allowUnsigned) {
   console.error("❌ release requires a code-signing certificate (SmartScreen + updater signature verification).\n" +
     "   Set CSC_LINK (path or base64 of the .pfx) and CSC_KEY_PASSWORD, e.g.:\n" +
     "     CSC_LINK=C:\\certs\\volt.pfx CSC_KEY_PASSWORD=*** npm run release\n" +
@@ -37,18 +56,26 @@ if (!cscLink) {
   process.exit(1);
 }
 
-// A configured cert is not enough: refuse to publish with a SELF-SIGNED
-// certificate (SmartScreen for every user + the updater rejects untrusted
-// chains, so every auto-update would fail), an expired cert, or one without
-// a private key — see signing-setup.cjs check-release.
-const certCheck = spawnSync(process.execPath, [join(__dirname, "signing-setup.cjs"), "check-release"], { stdio: "inherit" });
-if (certCheck.status !== 0) {
-  console.error("❌ release aborted by the certificate guard.");
-  process.exit(certCheck.status === null ? 1 : certCheck.status);
+if (allowUnsigned) {
+  console.warn("⚠ SCRATCH UNSIGNED RELEASE (VOLT_ALLOW_UNSIGNED=1) — publishing an UNSIGNED build.\n" +
+    "   SmartScreen will warn every user and the updater's signature verification is OFF.\n" +
+    "   Feed-mechanics testing only — delete this release after verifying.");
+} else {
+  // A configured cert is not enough: refuse to publish with a SELF-SIGNED
+  // certificate (SmartScreen for every user + the updater rejects untrusted
+  // chains, so every auto-update would fail), an expired cert, or one without
+  // a private key — see signing-setup.cjs check-release.
+  const certCheck = spawnSync(process.execPath, [join(__dirname, "signing-setup.cjs"), "check-release"], { stdio: "inherit" });
+  if (certCheck.status !== 0) {
+    console.error("❌ release aborted by the certificate guard.");
+    process.exit(certCheck.status === null ? 1 : certCheck.status);
+  }
 }
 
 const extraArgs = process.argv.slice(2);
-console.log("· signing release with certificate from CSC_LINK (publisher verification will be active)");
+console.log(allowUnsigned
+  ? "· building UNSIGNED (scratch mode — no publisher verification will be active)"
+  : "· signing release with certificate from CSC_LINK (publisher verification will be active)");
 
 // shell:true on win32 — spawning npx.cmd directly EINVALs on modern Node
 const r = spawnSync(process.platform === "win32" ? "npx.cmd" : "npx",
@@ -57,6 +84,11 @@ const r = spawnSync(process.platform === "win32" ? "npx.cmd" : "npx",
 if (r.status !== 0) {
   console.error("❌ electron-builder failed (status " + r.status + ")");
   process.exit(r.status === null ? 1 : r.status);
+}
+
+if (allowUnsigned) {
+  console.log("⚠ scratch unsigned build published — sign:check skipped by design.");
+  process.exit(0);
 }
 
 const check = spawnSync(process.execPath, [join(__dirname, "check-signing.cjs")], { stdio: "inherit" });

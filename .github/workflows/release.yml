@@ -18,6 +18,13 @@
 #   (npm run check:sw), secrets must be set, the release must be
 #   signed, and the published artifacts must verify.
 #
+#   The one deliberate exception: scratch_unsigned=true (with GH_TOKEN
+#   only) publishes an UNSIGNED build — the escape hatch for proving
+#   the publish/feed mechanics (latest.yml reachable with real content)
+#   before a real CA cert lands. SmartScreen warnings + no updater
+#   signature verification, so it is testing-only: delete the scratch
+#   release after verifying.
+#
 #   Secrets to configure on the repo:
 #     CSC_LINK            the code-signing PFX as base64 (or a URL)
 #     CSC_KEY_PASSWORD    its password
@@ -54,6 +61,17 @@ on:
           line, retry of a failed publish). The default release (tag
           push, or dispatch without main_sha) is the current tip and
           needs no confirmation.
+        required: false
+        type: boolean
+        default: false
+      scratch_unsigned:
+        description: >-
+          TESTING ONLY. Set true to publish an UNSIGNED build (skips
+          the certificate requirement, the cert guard, and sign:check)
+          — proving the publish/feed mechanics (latest.yml reachable
+          with real content) before a real CA cert lands. SmartScreen
+          warnings + NO updater signature verification: delete the
+          scratch release after verifying. Requires only GH_TOKEN.
         required: false
         type: boolean
         default: false
@@ -146,10 +164,15 @@ jobs:
       - name: Install Electron binary
         run: node node_modules/electron/install.js
 
-      - name: Guard — signing secrets configured
+      - name: Guard — signing secrets configured (GH_TOKEN always; CSC_LINK unless scratch_unsigned)
         run: |
-          if ("$env:CSC_LINK" -eq "") { throw "CSC_LINK secret is not set — configure it (and CSC_KEY_PASSWORD) or this release would be unsigned." }
+          $scratch = "${{ github.event.inputs.scratch_unsigned }}" -eq "true"
           if ("$env:GH_TOKEN" -eq "") { throw "GH_TOKEN secret is not set — releases can't be published without it." }
+          if ($scratch) {
+            Write-Host "⚠ SCRATCH UNSIGNED RELEASE — publishing an unsigned installer (SmartScreen + no updater signature check). Feed-mechanics testing only; delete the release after verifying."
+          } elseif ("$env:CSC_LINK" -eq "") {
+            throw "CSC_LINK secret is not set — configure it (and CSC_KEY_PASSWORD) or this release would be unsigned."
+          }
 
       # Tag pushes carry an explicit version (the tag name); a manual
       # dispatch has none, its version is simply what the checked-out tree's
@@ -169,7 +192,21 @@ jobs:
       # verify as signed by the configured publisher with a matching
       # publisherName in app-update.yml (the updater's runtime check).
       - name: Signed release
+        if: github.event.inputs.scratch_unsigned != 'true'
+        run: npm run release
+
+      # scratch_unsigned: the same publish, but UNSIGNED — CSC_LINK is
+      # blanked at step level (job env would otherwise sign with whatever
+      # cert is configured, and the updater's publisher check would reject
+      # an untrusted chain) and release.cjs skips the cert guard + sign:check.
+      - name: SCRATCH unsigned release (feed-mechanics proof only — delete after verifying)
+        if: github.event.inputs.scratch_unsigned == 'true'
+        env:
+          CSC_LINK: ''
+          CSC_KEY_PASSWORD: ''
+          VOLT_ALLOW_UNSIGNED: '1'
         run: npm run release
 
       - name: Verify signed artifacts (belt-and-braces, already run by release)
+        if: github.event.inputs.scratch_unsigned != 'true'
         run: npm run sign:check

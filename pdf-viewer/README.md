@@ -1543,6 +1543,16 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
    tree's `package.json` says; with no tag name to verify against, the
    version-match guard is push-only.
 
+   **Scratch unsigned releases (testing only).** Set `scratch_unsigned`
+   to publish an UNSIGNED build — the escape hatch for proving the
+   publish/feed mechanics (e.g. that the auto-update feed URL serves a
+   real `latest.yml`) before a real CA cert lands. It skips the
+   certificate requirement, the cert guard, and `sign:check`, and needs
+   only `GH_TOKEN`. An unsigned release means SmartScreen warnings and
+   NO updater signature verification, so it becomes the "latest" release
+   only until you delete it — `gh release delete v<version>` afterwards
+   (keep the git tag; the real signed publish recreates the release).
+
 ## Package release (Windows installer)
 
 From `pdf-viewer/`, build the installer with electron-builder:
@@ -1589,7 +1599,10 @@ soft-skips — dev builds are fine unsigned). Run it after any signing build.
 
 **To go live you still need a certificate from a CA** (DigiCert, Sectigo,
 SSL.com, …) — that's an external purchase; nothing in this repo can mint a
-trusted one. Until one is imported, builds are **unsigned**: they install and
+trusted one. The full walkthrough — buying the cert, exporting the PFX,
+`sign:setup import`, and pointing the CI secrets at it — lives in
+[`docs/signing-onboarding.md`](../docs/signing-onboarding.md) at the repo
+root. Until one is imported, builds are **unsigned**: they install and
 update normally, but users see the SmartScreen "unrecognized app" warning on
 first run and the updater does NOT verify signatures (no `publisherName` in
 `app-update.yml`). `npm run release` refuses to run unsigned — and it also

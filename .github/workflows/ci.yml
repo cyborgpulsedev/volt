@@ -40,6 +40,13 @@
 #        mode — so the full render chain + preload bridge + focus
 #        trap are covered here without OS focus.
 #
+#     8. Release feed reachability (public latest.yml)
+#        once ANY release exists, the auto-update feed must answer
+#        HTTP 200 to unauthenticated clients (that is exactly what
+#        installed copies hit); fails on 404/403. Soft-passes with a
+#        note while the repo has no releases — the expected pre-ship
+#        state.
+#
 #   A fourth, slower gate (release-feed job) runs the auto-update
 #   round-trip end-to-end: it builds the installer, publishes a
 #   scratch release feed (latest.yml + installer) over localhost,
@@ -120,6 +127,36 @@ jobs:
 
       - name: Artifact-generator regression guard (runs the Electron smoke headless)
         run: npm run test:artifacts
+
+      # Public release-feed reachability: once a release exists, the
+      # auto-update feed (latest.yml served by the GitHub provider) must
+      # answer HTTP 200 to unauthenticated clients — that is exactly the
+      # URL every installed copy hits. Fails on 404/403 when a release
+      # exists but the feed is unreachable (repo flipped private, assets
+      # detached, feed misconfigured). Soft-passes with a note while the
+      # repo has no releases: an empty feed is the expected pre-ship state.
+      - name: Release feed reachability (public latest.yml)
+        shell: bash
+        run: |
+          api_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
+          feed_url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.yml"
+          # -L on the API too: GitHub 301-redirects some repos' URLs to
+          # their canonical /repositories/{id} form, and a bare 301 must
+          # not be read as a failure.
+          api_code="$(curl -sSL -o /dev/null -w '%{http_code}' "$api_url")"
+          if [ "$api_code" = "200" ]; then
+            feed_code="$(curl -sSL -o /dev/null -w '%{http_code}' "$feed_url")"
+            echo "release exists — feed HTTP ${feed_code}"
+            if [ "$feed_code" != "200" ]; then
+              echo "::error::release exists but the auto-update feed returned HTTP ${feed_code} (expected 200) — installed copies cannot self-update"
+              exit 1
+            fi
+          elif [ "$api_code" = "404" ]; then
+            echo "no release published yet — reachability check soft-passes (expected pre-ship state)"
+          else
+            echo "::error::releases/latest API returned HTTP ${api_code} (expected 200 with a release, or 404 with none)"
+            exit 1
+          fi
 
   release-feed:
     name: Release-feed round-trip (update → banner)

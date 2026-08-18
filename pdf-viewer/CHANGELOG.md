@@ -4,6 +4,15 @@ Each release is a `## x.y.z` section. The version banner tooltip shows the
 sections newer than the installed bundle, so a pending update tells you what
 changed before you restart.
 
+## 1.0.1
+
+- Security & stability: upgraded the Electron runtime (33 → 43, a 10-major
+  jump covering 16 high-severity advisories) and the build toolchain
+  (electron-builder 26) — `npm audit` is now clean at 0 vulnerabilities
+- Release hardening: releases are only cut from the current tip of `main`
+  with fresh generated assets, so updates always ship the latest fixes
+- Smoother window-resize handling in the packaged smoke tests
+
 ## 1.0.0
 
 - OCR-first text layer: scans whose invisible embedded text sits offset from

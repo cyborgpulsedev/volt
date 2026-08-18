@@ -1,6 +1,10 @@
-## Volt 1.0.0 — first stable release
+## Volt 1.0.1
 
 Volt is a fast, private, ad-free PDF reader with AI built in — everything renders locally, and you bring your own LLM. No account, no telemetry, no upsells.
+
+**What's new in 1.0.1**
+- Security & stability: upgraded the Electron runtime (33 → 43, a 10-major jump covering 16 high-severity advisories) and the build toolchain — the dependency tree now audits clean (0 vulnerabilities)
+- Release hardening: releases are only cut from the current tip of main with fresh generated assets, so updates always ship the latest fixes
 
 **Highlights**
 - OCR-first text layer for scans with offset embedded text — highlights, selection, search and the AI follow what you actually see
@@ -13,7 +17,7 @@ Volt is a fast, private, ad-free PDF reader with AI built in — everything rend
 - Version-ready banner with auto-restart countdown and a what's-new changelog
 
 **Install**
-- **New installs:** download `Volt-Setup-1.0.0.exe` and run it — per-user install, no admin needed, desktop + Start-menu shortcut, and `.pdf` files open in Volt automatically.
+- **New installs:** download `Volt-Setup-1.0.1.exe` and run it — per-user install, no admin needed, desktop + Start-menu shortcut, and `.pdf` files open in Volt automatically.
 - **Existing installs:** updates apply automatically through the built-in updater.
 
 **Requirements**

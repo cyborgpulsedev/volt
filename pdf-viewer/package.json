@@ -1,7 +1,7 @@
 {
   "name": "volt-pdf-reader",
   "productName": "Volt",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Fast, private, ad-free PDF reader/editor with AI built in — powered by your local LLM.",
   "author": "Volt",
   "main": "main.js",

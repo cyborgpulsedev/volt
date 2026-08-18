@@ -188,12 +188,19 @@ export function stampHtml(source) {
 }
 
 export function renderIndexHtml() {
-  // stamp the release version into the shell's __VOLT_VERSION__ placeholder
-  // (index.html carries it in an inline script) — the running page then knows
-  // its own version without fetching anything, so the banner can diff the
-  // served sw.js VERSION against it. Idempotent: the on-disk stamped copy has
-  // no placeholder left, so a re-render is a no-op.
-  return stampHtml(readFileSync(INDEX_PATH, "utf8")).replace(/__VOLT_VERSION__/g, appVersion());
+  // stamp the release version into the shell's version marker (index.html
+  // carries it in an inline script) — the running page then knows its own
+  // version without fetching anything, so the banner can diff the served
+  // sw.js VERSION against it. BOTH forms are stamped: the pristine
+  // `__VOLT_VERSION__` placeholder AND the already-stamped literal ("1.0.0")
+  // — once consumed, the on-disk copy holds the literal, so a version bump
+  // would otherwise leave index.html stale (sw.js VERSION moves, this doesn't)
+  // while check:sw stays green. Re-stamping the literal keeps every render
+  // aligned with VERSION and makes the drift guard catch version staleness.
+  const v = appVersion();
+  return stampHtml(readFileSync(INDEX_PATH, "utf8"))
+    .replace(/__VOLT_VERSION__/g, v)
+    .replace(/window\.__VOLT_VERSION\s*=\s*"[^"]*"/, 'window.__VOLT_VERSION = "' + v + '"');
 }
 
 /** Regenerate BOTH derived artifacts in the ONE order that is consistent:

@@ -186,6 +186,25 @@ jobs:
             throw "tag v$tag ≠ package.json version $ver — bump VERSION, package.json and CHANGELOG.md first (see README 'Releasing a version')."
           }
 
+      # electron-builder's GitHub publisher races itself: the blockmap and
+      # the installer artifacts resolve their release CONCURRENTLY, both see
+      # "release doesn't exist", and both create one — seen live on the first
+      # scratch runs: TWO releases for the tag with split assets and a broken
+      # latest.yml feed. Pre-creating the release here, well before the
+      # publish, means both publishers find and reuse the same release (the
+      # publisher's 2-hour reuse window covers retries).
+      - name: Pre-create the GitHub release (dedupe the publisher race)
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists — publishers will reuse it"
+          else
+            gh release create "$tag" --title "$version" --notes-file "release-notes.md"
+            echo "pre-created release $tag"
+          fi
+
       # scripts/release.cjs: electron-builder --win nsis --publish always
       # (signs Volt.exe, the installer and the uninstaller with CSC_LINK),
       # then scripts/check-signing.cjs — exit non-zero unless the artifacts

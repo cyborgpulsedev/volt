@@ -97,7 +97,7 @@
         "provider": "github",
         "owner": "cyborgpulsedev",
         "repo": "volt",
-        "draft": false
+        "releaseType": "release"
       }
     ],
     "releaseInfo": {

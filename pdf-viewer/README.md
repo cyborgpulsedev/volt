@@ -1553,6 +1553,18 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
    only until you delete it — `gh release delete v<version>` afterwards
    (keep the git tag; the real signed publish recreates the release).
 
+   **Retrying a release.** A failed publish can simply be re-run (dispatch
+   again, or re-push the same tag) — at any time, however long after the
+   first attempt. The workflow pre-creates the release (deduping
+   electron-builder's two-publisher race: the blockmap and the installer
+   resolve their release concurrently, and without this both would create
+   one — seen live as two releases with split assets) and sets
+   `EP_GH_IGNORE_TIME`, so the publisher reuses that same release at any
+   age and re-uploads the fresh artifacts into it. Without that, a
+   re-run past electron-builder's 2-hour reuse window would silently
+   skip the upload and leave the release empty. One release per tag, ever
+   — a re-run never creates a duplicate.
+
 ## Package release (Windows installer)
 
 From `pdf-viewer/`, build the installer with electron-builder:

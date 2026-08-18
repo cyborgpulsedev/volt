@@ -16,7 +16,10 @@
 #   applies identically on both paths: the ref must be a commit on
 #   origin/main's history, its sw.js/index.html must be fresh
 #   (npm run check:sw), secrets must be set, the release must be
-#   signed, and the published artifacts must verify.
+#   signed, and the published artifacts must verify. Retries reuse the
+#   pre-created release at ANY age (EP_GH_IGNORE_TIME), so a re-run a day
+#   later re-uploads the fresh artifacts into the same release — one
+#   release per tag, ever, never a duplicate.
 #
 #   The one deliberate exception: scratch_unsigned=true (with GH_TOKEN
 #   only) publishes an UNSIGNED build — the escape hatch for proving
@@ -87,6 +90,16 @@ jobs:
       CSC_LINK: ${{ secrets.CSC_LINK }}
       CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      # Retry semantics: electron-builder's GitHub publisher only reuses an
+      # existing release when it is < 2 hours old (its published_at window);
+      # past that it warns "existing release published more than 2 hours ago"
+      # and SKIPS the upload entirely — so a re-run a day later would report
+      # success while leaving the pre-created release empty. The pre-create
+      # step below guarantees exactly ONE release per tag exists to reuse, so
+      # EP_GH_IGNORE_TIME tells the publisher to ignore the age window and
+      # re-upload the fresh artifacts INTO that release (overwriting the old
+      # assets) instead of skipping or creating a second one.
+      EP_GH_IGNORE_TIME: 'true'
     steps:
       # Tag push → the tag itself. Manual dispatch → the requested main
       # SHA (or the current tip when main_sha is empty). fetch-depth: 0
@@ -191,18 +204,33 @@ jobs:
       # "release doesn't exist", and both create one — seen live on the first
       # scratch runs: TWO releases for the tag with split assets and a broken
       # latest.yml feed. Pre-creating the release here, well before the
-      # publish, means both publishers find and reuse the same release (the
-      # publisher's 2-hour reuse window covers retries).
-      - name: Pre-create the GitHub release (dedupe the publisher race)
+      # publish, means both publishers find and reuse the same release.
+      # Retries are covered by EP_GH_IGNORE_TIME (job env): an existing
+      # release is reused at ANY age, so a re-run days later re-uploads into
+      # the same release instead of silently skipping (the publisher's
+      # default 2-hour window) or creating a second one. A found release is
+      # also force-published (draft → release) so a stale draft can't keep
+      # the feed 404ing, and a concurrent create-race (tag push + dispatch
+      # for the same version) falls back to reusing the winner.
+      - name: Pre-create the GitHub release (dedupe the publisher race; reused on retries)
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
           tag="v${version}"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if existing="$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null)"; then
+            if [ "$existing" = "true" ]; then
+              gh release edit "$tag" --draft=false
+              echo "converted draft release $tag to published"
+            fi
             echo "release $tag already exists — publishers will reuse it"
-          else
-            gh release create "$tag" --title "$version" --notes-file "release-notes.md"
+          elif gh release create "$tag" --title "$version" --notes-file "release-notes.md" 2>/tmp/release-create.err; then
             echo "pre-created release $tag"
+          elif gh release view "$tag" >/dev/null 2>&1; then
+            # A concurrent run created it between our view and create — reuse that one.
+            echo "release $tag appeared concurrently — reusing it"
+          else
+            cat /tmp/release-create.err
+            exit 1
           fi
 
       # scripts/release.cjs: electron-builder --win nsis --publish always

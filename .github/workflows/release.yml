@@ -1,12 +1,22 @@
 # ═══════════════════════════════════════════════════════════════
-#   Volt — Signed release (tag push)
+#   Volt — Signed release (tag push or manual dispatch)
 #
-#   Pushing a tag `vX.Y.Z` builds the NSIS installer, SIGNS it with
-#   the certificate from the CSC_LINK / CSC_KEY_PASSWORD secrets, and
+#   A tag push `vX.Y.Z` builds the NSIS installer, SIGNS it with the
+#   certificate from the CSC_LINK / CSC_KEY_PASSWORD secrets, and
 #   PUBLISHES it + latest.yml + the .blockmap to GitHub Releases
 #   (scripts/release.cjs refuses to run without a cert, then runs the
 #   sign:check gate on the output — a signed, verified release or no
 #   release at all).
+#
+#   Alternatively a maintainer can trigger it manually via
+#   workflow_dispatch: leave main_sha empty to release the CURRENT tip
+#   of origin/main (the default), or supply an OLDER main SHA (e.g. an
+#   emergency hotfix off a previous line, or a retry of a failed
+#   publish) — that requires confirm_stale_ref=true. Every other guard
+#   applies identically on both paths: the ref must be a commit on
+#   origin/main's history, its sw.js/index.html must be fresh
+#   (npm run check:sw), secrets must be set, the release must be
+#   signed, and the published artifacts must verify.
 #
 #   Secrets to configure on the repo:
 #     CSC_LINK            the code-signing PFX as base64 (or a URL)
@@ -19,8 +29,8 @@
 #   Before tagging: bump VERSION + package.json `version` + CHANGELOG
 #   (README "Releasing a version"); the guard steps below refuse a
 #   tag/version mismatch, a tag that doesn't point at the CURRENT tip of
-#   origin/main (so a stale re-tag can't ship without the latest fixes), a
-#   tag whose checked-in sw.js / index.html are stale (regenerate with
+#   origin/main (so a stale re-tag can't ship without the latest fixes),
+#   a tag whose checked-in sw.js / index.html are stale (regenerate with
 #   `npm run gen:sw`), and `npm run release` refuses unsigned.
 #   ═══════════════════════════════════════════════════════════════
 name: Release (signed)
@@ -28,6 +38,25 @@ name: Release (signed)
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      main_sha:
+        description: >-
+          Optional. Full commit SHA on main to release (leave empty to
+          release the CURRENT tip of origin/main). Any main SHA works,
+          but releasing a non-tip SHA requires confirm_stale_ref=true.
+        required: false
+        type: string
+      confirm_stale_ref:
+        description: >-
+          Set true to knowingly release a main SHA that is NOT the
+          current tip of origin/main (emergency hotfix off an older
+          line, retry of a failed publish). The default release (tag
+          push, or dispatch without main_sha) is the current tip and
+          needs no confirmation.
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   release:
@@ -41,20 +70,46 @@ jobs:
       CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
+      # Tag push → the tag itself. Manual dispatch → the requested main
+      # SHA (or the current tip when main_sha is empty). fetch-depth: 0
+      # so the on-main ancestry check below can resolve ANY main SHA,
+      # not just the tip.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.main_sha || github.ref }}
+          fetch-depth: 0
 
-      # Fail fast (before the ~3 min dependency install): the tag must point
-      # at the CURRENT tip of origin/main. Re-tagging an old commit (e.g.
-      # re-pointing v1.0.0 at a pre-upgrade SHA) would publish a release
-      # without the latest fixes — and the version-match guard can't catch
-      # it, because the version numbers still line up.
-      - name: Guard — tag points at current main HEAD
+      # Fail fast (before the ~3 min dependency install). Every release
+      # must be a commit on origin/main's history; the DEFAULT is the
+      # strict rule that it must also be the CURRENT tip. Re-tagging an
+      # old commit (e.g. re-pointing v1.0.0 at a pre-upgrade SHA) would
+      # publish a release without the latest fixes — and the version-
+      # match guard can't catch it, because the version numbers still
+      # line up. The one deliberate escape hatch: a workflow_dispatch
+      # with confirm_stale_ref=true, which lets a maintainer cut a
+      # release from an OLDER main SHA (still on main's history, still
+      # artifact-guarded below, explicitly acknowledged as not latest).
+      - name: Guard — release ref is on main (current tip by default; dispatch may opt into an older main SHA)
         run: |
-          git fetch origin main --depth=1
-          $tagCommit = (git rev-parse HEAD).Trim()
+          $isDispatch = "${{ github.event_name }}" -eq "workflow_dispatch"
+          $confirmed = "${{ github.event.inputs.confirm_stale_ref }}" -eq "true"
+          git fetch origin main
+          $refCommit = (git rev-parse HEAD).Trim()
           $mainCommit = (git rev-parse FETCH_HEAD).Trim()
-          if ($tagCommit -ne $mainCommit) {
-            throw "tag ${{ github.ref_name }} points at $tagCommit, but origin/main is at $mainCommit — re-cut the tag at current main so the release carries the latest fixes (see README 'Releasing a version')."
+          git merge-base --is-ancestor $refCommit origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "release ref $refCommit is not on origin/main — releases can only be cut from a main commit (see README 'Releasing a version')."
+          }
+          if ($refCommit -ne $mainCommit) {
+            if (-not $isDispatch) {
+              throw "tag ${{ github.ref_name }} points at $refCommit, but origin/main is at $mainCommit — re-cut the tag at current main so the release carries the latest fixes (see README 'Releasing a version')."
+            }
+            if (-not $confirmed) {
+              throw "workflow_dispatch picked $refCommit (main is at $mainCommit) without confirm_stale_ref=true — set it to knowingly release an older main SHA."
+            }
+            Write-Host "⚠ releasing older main SHA $refCommit (origin/main is $mainCommit) — confirmed by the maintainer."
+          } else {
+            Write-Host "release ref $refCommit == origin/main HEAD — current main, no confirmation needed."
           }
 
       - uses: actions/setup-node@v4
@@ -96,7 +151,11 @@ jobs:
           if ("$env:CSC_LINK" -eq "") { throw "CSC_LINK secret is not set — configure it (and CSC_KEY_PASSWORD) or this release would be unsigned." }
           if ("$env:GH_TOKEN" -eq "") { throw "GH_TOKEN secret is not set — releases can't be published without it." }
 
+      # Tag pushes carry an explicit version (the tag name); a manual
+      # dispatch has none, its version is simply what the checked-out tree's
+      # package.json says — so this guard is push-only.
       - name: Guard — tag matches package.json version
+        if: github.event_name == 'push'
         run: |
           $tag = "${{ github.ref_name }}".TrimStart('v')
           $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version

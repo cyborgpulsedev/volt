@@ -1531,6 +1531,18 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
    check above on the tag's own tree, so a tag can never ship a worker that
    precaches old files under an old name.
 
+   **Alternative: release without a tag (manual dispatch).** The same
+   workflow can be triggered from the Actions tab ("Run workflow"): leave
+   `main_sha` empty to release the current tip of `origin/main` (no
+   confirmation needed), or paste any full SHA that lies on `main`'s
+   history to release that exact commit — that non-tip case requires
+   checking `confirm_stale_ref`, e.g. an emergency hotfix off a previous
+   line or retrying a publish after a failed run. Every other guard
+   (on-main ancestry, artifact freshness, secrets, signed artifacts)
+   applies identically. The published version is whatever the checked-out
+   tree's `package.json` says; with no tag name to verify against, the
+   version-match guard is push-only.
+
 ## Package release (Windows installer)
 
 From `pdf-viewer/`, build the installer with electron-builder:

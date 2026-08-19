@@ -109,7 +109,7 @@ jobs:
       # SHA (or the current tip when main_sha is empty). fetch-depth: 0
       # so the on-main ancestry check below can resolve ANY main SHA,
       # not just the tip.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.main_sha || github.ref }}
           fetch-depth: 0
@@ -147,9 +147,9 @@ jobs:
             Write-Host "release ref $refCommit == origin/main HEAD — current main, no confirmation needed."
           }
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           # repo-root-relative — the lockfile lives under pdf-viewer/
           cache-dependency-path: pdf-viewer/package-lock.json
@@ -171,7 +171,7 @@ jobs:
       # has wiped node_modules — so an unchanged lockfile reuses the cached
       # dist instead of re-downloading ~110 MB on every release.
       - name: Cache Electron binary
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: node_modules/electron/dist
           # hashFiles is repo-root-relative too — hashing a non-existent

@@ -85,11 +85,11 @@ jobs:
       run:
         working-directory: pdf-viewer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           # repo-root-relative — the lockfile lives under pdf-viewer/
           cache-dependency-path: pdf-viewer/package-lock.json
@@ -101,7 +101,7 @@ jobs:
       # has wiped node_modules — so an unchanged lockfile reuses the cached
       # dist instead of re-downloading ~110 MB on every push.
       - name: Cache Electron binary
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: node_modules/electron/dist
           # hashFiles is repo-root-relative too — a non-existent file makes
@@ -210,11 +210,11 @@ jobs:
     # round-trip is covered by the release workflow with a real cert — if one
     # is ever configured here, re-add CSC_LINK / CSC_KEY_PASSWORD env keys.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           # repo-root-relative — the lockfile lives under pdf-viewer/
           cache-dependency-path: pdf-viewer/package-lock.json
@@ -225,7 +225,7 @@ jobs:
       # Same Electron cache dance as the checks job: restore BEFORE
       # install.js runs, so an unchanged lockfile skips the ~110 MB fetch.
       - name: Cache Electron binary
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: node_modules/electron/dist
           # hashFiles is repo-root-relative too — a non-existent file makes

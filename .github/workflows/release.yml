@@ -27,7 +27,10 @@
 #   (releases/latest/download/latest.yml — the URL every installed copy
 #   polls) and fails the run if it does not advertise the published
 #   version: a publish that reported success while leaving the release
-#   empty/stale can never go unnoticed.
+#   empty/stale can never go unnoticed. One reuse is REFUSED: a release that already shipped
+#   (published, with the full latest.yml + installer + blockmap asset
+#   set) fails the run rather than being overwritten — delete it first
+#   (gh release delete vX.Y.Z) to re-publish that version.
 #
 #   The one deliberate exception: scratch_unsigned=true (with GH_TOKEN
 #   only) publishes an UNSIGNED build — the escape hatch for proving
@@ -233,21 +236,62 @@ jobs:
       # also force-published (draft → release) so a stale draft can't keep
       # the feed 404ing, and a concurrent create-race (tag push + dispatch
       # for the same version) falls back to reusing the winner.
-      - name: Pre-create the GitHub release (dedupe the publisher race; reused on retries)
+      #
+      # One reuse is REFUSED: a release that has already SHIPPED — published
+      # (not a draft) AND carrying the full NSIS asset set (latest.yml feed +
+      # installer .exe + .blockmap) — was genuinely delivered to users.
+      # Re-running must never silently overwrite artifacts people already
+      # downloaded (a re-tag, an accidental re-dispatch, or a leftover
+      # scratch release). Empty (pre-created, never published), partial
+      # (crashed upload), and draft releases are all retry states and are
+      # reused as before.
+      - name: Pre-create the GitHub release (dedupe the publisher race; reused on retries; refuses to overwrite a shipped release)
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
           tag="v${version}"
+          # true when the release is published and its asset set looks like a
+          # completed electron-builder publish (latest.yml + installer +
+          # blockmap) — i.e. a genuinely shipped release, not a pre-created
+          # empty shell or a partial crashed upload. gh hands the JSON to
+          # node (installed by setup-node above) so the predicate is plain
+          # JS, not a gh-version-dependent jq dialect.
+          is_shipped() {
+            gh release view "$1" --json isDraft,assets -q '{draft: .isDraft, names: [.assets[].name]}' 2>/dev/null | node -e '
+              let s = "";
+              process.stdin.on("data", (d) => (s += d));
+              process.stdin.on("end", () => {
+                try {
+                  const r = JSON.parse(s);
+                  const n = r.names || [];
+                  const shipped = !r.draft && n.includes("latest.yml") &&
+                    n.some((x) => /\.exe$/i.test(x)) &&
+                    n.some((x) => /\.blockmap$/i.test(x));
+                  process.stdout.write(shipped ? "true" : "false");
+                } catch { process.stdout.write("false"); }
+              });'
+          }
           if existing="$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null)"; then
+            if [ "$(is_shipped "$tag")" = "true" ]; then
+              echo "::error::release $tag already shipped (published, with latest.yml + installer + blockmap) — refusing to overwrite a genuinely shipped release. If this is a leftover scratch release, delete it with: gh release delete $tag"
+              exit 1
+            fi
             if [ "$existing" = "true" ]; then
               gh release edit "$tag" --draft=false
               echo "converted draft release $tag to published"
+            else
+              echo "release $tag exists but carries no complete asset set (empty or a partial failed publish) — publishers will re-upload into it"
             fi
             echo "release $tag already exists — publishers will reuse it"
           elif gh release create "$tag" --title "$version" --notes-file "release-notes.md" 2>/tmp/release-create.err; then
             echo "pre-created release $tag"
           elif gh release view "$tag" >/dev/null 2>&1; then
-            # A concurrent run created it between our view and create — reuse that one.
+            # A concurrent run created it between our view and create — reuse
+            # that one, unless it already shipped (same guard).
+            if [ "$(is_shipped "$tag")" = "true" ]; then
+              echo "::error::release $tag appeared concurrently AND already shipped — refusing to overwrite a genuinely shipped release"
+              exit 1
+            fi
             echo "release $tag appeared concurrently — reusing it"
           else
             cat /tmp/release-create.err

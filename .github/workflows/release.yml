@@ -23,7 +23,11 @@
 #   a publish. Retries reuse the pre-created release at ANY age
 #   (EP_GH_IGNORE_TIME), so a re-run a day later re-uploads the fresh
 #   artifacts into the same release — one release per tag, ever, never a
-#   duplicate.
+#   duplicate. After every publish the workflow re-checks the LIVE feed
+#   (releases/latest/download/latest.yml — the URL every installed copy
+#   polls) and fails the run if it does not advertise the published
+#   version: a publish that reported success while leaving the release
+#   empty/stale can never go unnoticed.
 #
 #   The one deliberate exception: scratch_unsigned=true (with GH_TOKEN
 #   only) publishes an UNSIGNED build — the escape hatch for proving
@@ -274,3 +278,40 @@ jobs:
       - name: Verify signed artifacts (belt-and-braces, already run by release)
         if: github.event.inputs.scratch_unsigned != 'true'
         run: npm run sign:check
+
+      # Post-publish verification: the publish may have "succeeded" while
+      # the release stayed empty (the >2h upload-skip bug EP_GH_IGNORE_TIME
+      # fixes) or the latest release isn't this one — either way the live
+      # auto-update feed would not advertise the version just published,
+      # and installed copies would never see it. Poll the public feed (the
+      # same URL every installed copy hits) until it answers 200 with the
+      # published version, then fail the run if it never does. This mirrors
+      # the ci.yml feed-version check, but as an in-run self-verification
+      # instead of a next-push gate.
+      - name: Post-publish verification — live feed advertises the published version
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          feed_url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.yml"
+          body="$(mktemp)"
+          ok=""
+          for i in $(seq 1 12); do
+            code="$(curl -sSL -o "$body" -w '%{http_code}' "$feed_url" || true)"
+            if [ "$code" = "200" ]; then
+              feed_ver="$(grep -m1 '^version:' "$body" | sed -E 's/^version:[[:space:]]*//' | tr -d '"' | tr -d "'" | xargs || true)"
+              if [ -n "$feed_ver" ] && [ "$feed_ver" = "$version" ]; then
+                ok="true"
+                echo "attempt $i/12: feed advertises ${feed_ver} — matches the published version"
+                break
+              fi
+              echo "attempt $i/12: feed HTTP 200 but advertises ${feed_ver:-<empty>} ≠ ${version} — waiting for propagation"
+            else
+              echo "attempt $i/12: feed HTTP ${code} — waiting for propagation"
+            fi
+            sleep 10
+          done
+          rm -f "$body"
+          if [ "$ok" != "true" ]; then
+            echo "::error::post-publish check failed — the live auto-update feed (${feed_url}) does not advertise the published version ${version}. Installed copies would not see this release as latest. Check the publish output above and the release at https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${version}"
+            exit 1
+          fi

@@ -40,10 +40,17 @@
 #        mode — so the full render chain + preload bridge + focus
 #        trap are covered here without OS focus.
 #
-#     8. Release feed reachability (public latest.yml)
+#     8. Release feed reachability + version match (public latest.yml)
 #        once ANY release exists, the auto-update feed must answer
 #        HTTP 200 to unauthenticated clients (that is exactly what
-#        installed copies hit); fails on 404/403. Soft-passes with a
+#        installed copies hit); fails on 404/403. On main pushes it
+#        additionally fails when the feed's advertised version ≠ the
+#        tree's package.json version — drift means the updater's
+#        "latest" is not what main ships (leftover scratch release,
+#        a manual publish of the wrong version, a bump that never
+#        shipped). PRs / branch pushes / tag pushes run the
+#        reachability half only (their versions aren't release state,
+#        and a tag-push CI run races the publish). Soft-passes with a
 #        note while the repo has no releases — the expected pre-ship
 #        state.
 #
@@ -128,14 +135,22 @@ jobs:
       - name: Artifact-generator regression guard (runs the Electron smoke headless)
         run: npm run test:artifacts
 
-      # Public release-feed reachability: once a release exists, the
-      # auto-update feed (latest.yml served by the GitHub provider) must
-      # answer HTTP 200 to unauthenticated clients — that is exactly the
-      # URL every installed copy hits. Fails on 404/403 when a release
-      # exists but the feed is unreachable (repo flipped private, assets
-      # detached, feed misconfigured). Soft-passes with a note while the
-      # repo has no releases: an empty feed is the expected pre-ship state.
-      - name: Release feed reachability (public latest.yml)
+      # Public release-feed checks. Reachability (every run): once a release
+      # exists, the auto-update feed (latest.yml served by the GitHub
+      # provider) must answer HTTP 200 to unauthenticated clients — that is
+      # exactly the URL every installed copy hits. Fails on 404/403 when a
+      # release exists but the feed is unreachable (repo flipped private,
+      # assets detached, feed misconfigured).
+      # Version match (main pushes only): the feed's advertised version must
+      # equal the tree's package.json version — drift means the updater's
+      # "latest" is not what main ships (leftover scratch release, a manual
+      # publish of the wrong version, a bump that never shipped). PRs and
+      # branch pushes skip the comparison (their versions aren't release
+      # state) and so do tag pushes (the release workflow itself verifies
+      # tag ↔ package.json, and the tag-push CI run races the publish).
+      # Soft-passes with a note while the repo has no releases: an empty
+      # feed is the expected pre-ship state.
+      - name: Release feed reachability + version match (public latest.yml)
         shell: bash
         run: |
           api_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
@@ -145,14 +160,34 @@ jobs:
           # not be read as a failure.
           api_code="$(curl -sSL -o /dev/null -w '%{http_code}' "$api_url")"
           if [ "$api_code" = "200" ]; then
-            feed_code="$(curl -sSL -o /dev/null -w '%{http_code}' "$feed_url")"
+            feed_body="$(mktemp)"
+            feed_code="$(curl -sSL -o "$feed_body" -w '%{http_code}' "$feed_url")"
             echo "release exists — feed HTTP ${feed_code}"
             if [ "$feed_code" != "200" ]; then
               echo "::error::release exists but the auto-update feed returned HTTP ${feed_code} (expected 200) — installed copies cannot self-update"
+              rm -f "$feed_body"
               exit 1
             fi
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              pkg_version="$(node -p "require('./package.json').version")"
+              feed_version="$(grep -m1 '^version:' "$feed_body" | sed -E 's/^version:[[:space:]]*//' | tr -d '"' | tr -d "'" | xargs || true)"
+              if [ -z "$feed_version" ]; then
+                echo "::error::release exists and the feed is reachable, but latest.yml has no parseable 'version:' field — the updater cannot compare versions"
+                rm -f "$feed_body"
+                exit 1
+              fi
+              if [ "$feed_version" != "$pkg_version" ]; then
+                echo "::error::release feed advertises version ${feed_version} but the tree's package.json declares ${pkg_version} — the updater's 'latest' is not what main ships. Ship v${pkg_version} (tag it and push), or if this is a leftover scratch release delete it with: gh release delete v${feed_version}"
+                rm -f "$feed_body"
+                exit 1
+              fi
+              echo "feed version ${feed_version} matches package.json ${pkg_version}"
+            else
+              echo "not a main push — reachability only, skipping the version match"
+            fi
+            rm -f "$feed_body"
           elif [ "$api_code" = "404" ]; then
-            echo "no release published yet — reachability check soft-passes (expected pre-ship state)"
+            echo "no release published yet — feed check soft-passes (expected pre-ship state)"
           else
             echo "::error::releases/latest API returned HTTP ${api_code} (expected 200 with a release, or 404 with none)"
             exit 1

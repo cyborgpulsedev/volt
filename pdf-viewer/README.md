@@ -1754,6 +1754,14 @@ dev/private builds use `npm run dist` instead. The same artifacts land in
   if an install dir ever appears. CI runs it as the `release-feed` job;
   locally `node scripts/test-release-feed.mjs --build` (or without
   `--build` to reuse an existing `dist/`).
+- **CI drift gate on the live feed.** The `checks` job's feed step verifies
+  on every main push that the public feed's advertised `latest.yml` version
+  equals the tree's `package.json` version (reachability HTTP 200 is
+  checked on every run; the version match on main pushes only). A mismatch
+  means the updater's "latest" is not what main ships — typically a
+  leftover scratch release (`gh release delete v<version>`) or a version
+  bump that was never tagged. Expected: CI goes red between bumping the
+  version and shipping the tag, and green again once the release publishes.
 
 Two build gotchas, both already handled in this repo — keep them in mind when
 touching the build config:

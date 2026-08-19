@@ -1555,7 +1555,11 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
 
    **Retrying a release.** A failed publish can simply be re-run (dispatch
    again, or re-push the same tag) — at any time, however long after the
-   first attempt. The workflow pre-creates the release (deduping
+   first attempt. The certificate guard (self-signed / expired / keyless)
+   runs before the release is pre-created, so a run that fails the guard
+   stops with NO release created — the feed is never polluted by an empty
+   release. Only a run that passes the cert guard pre-creates the release
+   (deduping
    electron-builder's two-publisher race: the blockmap and the installer
    resolve their release concurrently, and without this both would create
    one — seen live as two releases with split assets) and sets

@@ -16,10 +16,14 @@
 #   applies identically on both paths: the ref must be a commit on
 #   origin/main's history, its sw.js/index.html must be fresh
 #   (npm run check:sw), secrets must be set, the release must be
-#   signed, and the published artifacts must verify. Retries reuse the
-#   pre-created release at ANY age (EP_GH_IGNORE_TIME), so a re-run a day
-#   later re-uploads the fresh artifacts into the same release — one
-#   release per tag, ever, never a duplicate.
+#   signed, and the published artifacts must verify. The certificate
+#   guard (self-signed/expired/keyless) runs BEFORE the release is
+#   pre-created, so a run that fails the guard never leaves an empty
+#   release behind — the feed stays untouched until a real CA cert signs
+#   a publish. Retries reuse the pre-created release at ANY age
+#   (EP_GH_IGNORE_TIME), so a re-run a day later re-uploads the fresh
+#   artifacts into the same release — one release per tag, ever, never a
+#   duplicate.
 #
 #   The one deliberate exception: scratch_unsigned=true (with GH_TOKEN
 #   only) publishes an UNSIGNED build — the escape hatch for proving
@@ -198,6 +202,19 @@ jobs:
           if ($tag -ne $ver) {
             throw "tag v$tag ≠ package.json version $ver — bump VERSION, package.json and CHANGELOG.md first (see README 'Releasing a version')."
           }
+
+      # The SAME certificate guard release.cjs runs (scripts/signing-setup.cjs
+      # check-release), hoisted here BEFORE the pre-create step: a configured
+      # cert is not enough to release — self-signed (SmartScreen for every
+      # user, updater rejects the chain), expired, or keyless certs must abort
+      # the run BEFORE any release is created. Otherwise the expected
+      # cert-guard failure would leave an empty published release behind,
+      # breaking the feed (releases/latest 200 with no latest.yml asset) and
+      # reddening CI until someone deletes it. With a real CA cert in
+      # CSC_LINK this passes and the pre-create below runs.
+      - name: Guard — release certificate is a real CA cert (not self-signed)
+        if: github.event.inputs.scratch_unsigned != 'true'
+        run: node scripts/signing-setup.cjs check-release
 
       # electron-builder's GitHub publisher races itself: the blockmap and
       # the installer artifacts resolve their release CONCURRENTLY, both see

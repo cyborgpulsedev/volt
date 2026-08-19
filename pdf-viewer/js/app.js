@@ -25,6 +25,7 @@
     currentDocId: null,     // cache key
     zoom: 1,                // current scale
     zoomMode: "fit-width",  // fit-width | fit-page | custom
+    viewMode: "continuous", // continuous (free column) | one (snap per page) | spread (two side by side)
     rotDelta: 0,            // 0/90/180/270
     pageDims: [],           // [{w, h}] base dims at scale 1
     pageLayout: [],         // [{top, height}] in CSS px
@@ -32,6 +33,8 @@
     thumbRendered: new Set(),
     _keepAllRendered: false, // a Ctrl+A+A whole-document selection pins the full render
     _wheelAnchor: null,     // {pageNum, x, y, clientX, clientY} — pending Ctrl+wheel zoom anchor
+    _flipping: false,       // a book-flip tween is in flight (one at a time)
+    _flipTimers: [],        // its timeouts — cleared when the document changes
     search: null,           // {query, results, current}
     pendingRender: new Map(),
     _pendingBackup: null,   // parsed backup JSON awaiting the right document to open
@@ -104,10 +107,12 @@
         btnSampleEmpty: $("btn-sample-empty"), btnRestoreEmpty: $("btn-restore-empty"), btnExport: $("btn-export"),
         btnZoomOut: $("btn-zoom-out"), btnZoomIn: $("btn-zoom-in"), btnFitWidth: $("btn-fit-width"),
         btnFitPage: $("btn-fit-page"), btnRotate: $("btn-rotate"), zoomLabel: $("zoom-label"),
+        btnModeContinuous: $("btn-mode-continuous"), btnModeOne: $("btn-mode-one"), btnModeSpread: $("btn-mode-spread"),
         fabZoomOut: $("fab-zoom-out"), fabZoomIn: $("fab-zoom-in"), fabZoomLabel: $("fab-zoom-label"), zoomFab: $("zoom-fab"),
-        btnSidebar: $("btn-sidebar"), btnAi: $("btn-ai"), btnSettings: $("btn-settings"), btnHelp: $("btn-help"),
+        btnSidebar: $("btn-sidebar"), btnAi: $("btn-ai"), btnSettings: $("btn-settings"), btnHelp: $("btn-help"), btnBm: $("btn-bm"),
         btnMenuSettings: $("btn-menu-settings"), btnMenuHelp: $("btn-menu-help"), btnMenuSetup: $("btn-menu-setup"),
         btnCheckUpdates: $("btn-check-updates"), btnAbout: $("btn-about"), btnSavePdf: $("btn-save-pdf"), btnExit: $("btn-exit"),
+        btnMenuFeedback: $("btn-menu-feedback"),
         aboutModal: $("about-modal"), aboutVersion: $("about-version"), aboutEngine: $("about-engine"), aboutChangelog: $("about-changelog"), aboutClose: $("about-close"),
         sigModal: $("sig-modal"), sigSaved: $("sig-saved"), sigTabDraw: $("sig-tab-draw"), sigTabType: $("sig-tab-type"),
         sigCanvas: $("sig-canvas"), sigDrawWrap: $("sig-draw-wrap"), sigTypeWrap: $("sig-type-wrap"),
@@ -127,7 +132,7 @@
         searchPrev: $("search-prev"), searchNext: $("search-next"), searchClear: $("search-clear"),
         modeGroup: $("menu-markup-panel"), modeTip: $("mode-tip"),
         sidebar: $("sidebar"), sideTabs: document.querySelectorAll(".side-tab"),
-        panelPages: $("panel-pages"), panelOutline: $("panel-outline"), panelNotes: $("panel-notes"),
+        panelPages: $("panel-pages"), panelOutline: $("panel-outline"), panelNotes: $("panel-notes"), panelBm: $("panel-bm"),
         thumbGrid: $("thumb-grid"), outlineTree: $("outline-tree"), notesList: $("notes-list"),
         thumbBlockActions: $("thumb-block-actions"),
         thumbMoveFirst: $("thumb-move-first"), thumbMoveLast: $("thumb-move-last"),
@@ -135,6 +140,8 @@
         thumbMoveForm: $("thumb-move-form"), thumbMovePos: $("thumb-move-pos"),
         thumbMoveHint: $("thumb-move-hint"), thumbMoveGo: $("thumb-move-go"), thumbMoveCancel: $("thumb-move-cancel"),
         notesBadge: $("notes-badge"), btnClearNotes: $("btn-clear-notes"), btnManagePages: $("btn-manage-pages"),
+        bmList: $("bm-list"), bmBadge: $("bm-badge"), bmFilter: $("bm-filter"),
+        btnBmAdd: $("btn-bm-add"), btnBmClear: $("btn-bm-clear"),
         btnThumbSelAnn: $("btn-thumb-select-ann"),
         pagesModal: $("pages-modal"), pagesModalSub: $("pages-modal-sub"), pagesPlanGrid: $("pages-plan-grid"),
         pagesSelInfo: $("pages-sel-info"), pagesEditNote: $("pages-edit-note"),
@@ -177,6 +184,12 @@
         exportModal: $("export-modal"), exportClose: $("export-close"), exportSelNote: $("export-sel-note"),
         exportOcrTxt: $("export-ocr-txt"), exportOcrMd: $("export-ocr-md"),
         expAnn: $("exp-ann"), expAi: $("exp-ai"), expChat: $("exp-chat"),
+        secureModal: $("secure-modal"), securePass: $("secure-pass"), securePass2: $("secure-pass2"),
+        securePermCopy: $("secure-perm-copy"), securePermPrint: $("secure-perm-print"), securePermModify: $("secure-perm-modify"),
+        secureGo: $("secure-go"), secureCancel: $("secure-cancel"),
+        signModal: $("sign-modal"), signCert: $("sign-cert"), signCertBrowse: $("sign-cert-browse"),
+        signCertFile: $("sign-cert-file"), signPass: $("sign-pass"), signReason: $("sign-reason"),
+        signPage: $("sign-page"), signGo: $("sign-go"), signCancel: $("sign-cancel"),
         restoreModal: $("restore-modal"), restoreMsg: $("restore-msg"),
         restoreOpen: $("restore-open"), restoreAnyway: $("restore-anyway"), restoreCancel: $("restore-cancel"),
         settingsModal: $("settings-modal"), setProvider: $("set-provider"), setBaseurl: $("set-baseurl"),
@@ -196,8 +209,9 @@
         docOverrideBlock: $("doc-override-block"), setDocOverride: $("set-doc-override"),
         setDocModel: $("set-doc-model"), setDocMaxctx: $("set-doc-maxctx"), setDocSysprompt: $("set-doc-sysprompt"),
         helpModal: $("help-modal"), helpClose: $("help-close"), kbdList: $("kbd-list"),
-        setupModal: $("setup-modal"), setupBanner: $("setup-banner"),
-        setupBannerGo: $("setup-banner-go"), setupBannerLater: $("setup-banner-later"),
+        feedbackModal: $("feedback-modal"), feedbackType: $("feedback-type"), feedbackText: $("feedback-text"),
+        feedbackEmail: $("feedback-email"), feedbackGo: $("feedback-go"), feedbackCancel: $("feedback-cancel"),
+        setupModal: $("setup-modal"), startHint: $("start-hint"),
         setupSteps: $("setup-steps"), setupSkip: $("setup-skip"),
         setupNext0: $("setup-next-0"), setupNext1: $("setup-next-1"), setupNext2: $("setup-next-2"),
         setupFinish: $("setup-finish"), setupDesktop: $("setup-desktop"),
@@ -211,6 +225,15 @@
         sbFile: $("sb-file"), sbPage: $("sb-page"), sbZoom: $("sb-zoom"), sbSel: $("sb-sel"), sbAi: $("sb-ai"), sbHint: $("sb-hint"),
       };
 
+      // persisted page mode (continuous scroll / one page / two pages). The
+      // pre-1.0.2 key "single" meant the free column — now called continuous.
+      try {
+        const vm = localStorage.getItem("volt:view-mode");
+        if (vm === "spread" || vm === "one") this.viewMode = vm;
+        // "single" / anything else → continuous (the default)
+      } catch (e) { /* ignore */ }
+      this._syncViewMode();
+
       this._wireToolbar();
       this._wireSearch();
       this._wireSidebar();
@@ -222,9 +245,10 @@
       this._buildHelp();
       this._wireHelpNav();
       this._wireSetupWizard();
-      this._maybeShowSetupBanner();
+      this._maybeShowStartHint();
 
       Volt.Ann.init();
+      if (Volt.Bm) Volt.Bm.init(); // bookmarks panel + markers (independent of annotations)
       Volt.AI.init();
       if (Volt.Voice) Volt.Voice.init(); // read-aloud + voice input (never blocks)
 
@@ -342,6 +366,9 @@
       el.btnFitWidth.addEventListener("click", () => this.fitWidth());
       el.btnFitPage.addEventListener("click", () => this.fitPage());
       el.btnRotate.addEventListener("click", () => this.rotate());
+      if (el.btnModeContinuous) el.btnModeContinuous.addEventListener("click", () => this.setViewMode("continuous"));
+      if (el.btnModeOne) el.btnModeOne.addEventListener("click", () => this.setViewMode("one"));
+      if (el.btnModeSpread) el.btnModeSpread.addEventListener("click", () => this.setViewMode("spread"));
 
       el.btnSidebar.addEventListener("click", () => this.toggleSidebar());
       el.btnAi.addEventListener("click", () => this.toggleAI());
@@ -356,6 +383,12 @@
       if (el.btnMenuSetup) el.btnMenuSetup.addEventListener("click", () => this.openSetup());
       if (el.btnMenuHelp) el.btnMenuHelp.addEventListener("click", () => this._openHelp("getting-started"));
       if (el.btnAbout) el.btnAbout.addEventListener("click", () => this._openAbout());
+      if (el.btnMenuFeedback) el.btnMenuFeedback.addEventListener("click", () => this._openFeedback());
+      if (el.feedbackGo) el.feedbackGo.addEventListener("click", () => this._sendFeedback());
+      if (el.feedbackCancel) el.feedbackCancel.addEventListener("click", () => this._closeModal(el.feedbackModal));
+      if (el.feedbackText) el.feedbackText.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) this._sendFeedback();
+      });
       if (el.btnCheckUpdates) el.btnCheckUpdates.addEventListener("click", () => this._checkForUpdates());
       if (el.btnSavePdf) el.btnSavePdf.addEventListener("click", () => this._savePdf());
       if (el.btnExit) el.btnExit.addEventListener("click", () => this._quitApp());
@@ -530,6 +563,26 @@
       el.exportClose.addEventListener("click", () => this._closeModal(el.exportModal));
       el.exportModal.querySelectorAll(".export-item").forEach((item) => {
         item.addEventListener("click", () => this._doExport(item.dataset.export));
+      });
+
+      // ── Secure PDF (Export ▸ Secure PDF…) ────────────────────
+      el.secureCancel.addEventListener("click", () => this._closeModal(el.secureModal));
+      el.secureGo.addEventListener("click", () => this._doSecureExport());
+      el.securePass.addEventListener("keydown", (e) => { if (e.key === "Enter") this._doSecureExport(); });
+      el.securePass2.addEventListener("keydown", (e) => { if (e.key === "Enter") this._doSecureExport(); });
+
+      // ── Digital signature (Export ▸ Digitally sign PDF…) ──────
+      el.signCancel.addEventListener("click", () => this._closeModal(el.signModal));
+      el.signGo.addEventListener("click", () => this._doSignExport());
+      el.signPass.addEventListener("keydown", (e) => { if (e.key === "Enter") this._doSignExport(); });
+      el.signCertBrowse.addEventListener("click", () => this._pickSignCert());
+      el.signCertFile.addEventListener("change", (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (f) {
+          this._signCert = f;          // PWA / browser mode: the File object itself
+          this._signCertPath = null;
+          el.signCert.value = f.name;
+        }
       });
 
       this._wireMenus();
@@ -800,6 +853,61 @@
           });
       } catch (e) { /* the About modal must never break */ }
       this._openModal(el.aboutModal);
+    },
+
+    /* ── Send feedback (Volt ▾ → Send feedback…) ──────────────
+       Opens the feedback modal; Submit drafts a GitHub issue on the public
+       Volt repository with the message + an environment block pre-filled.
+       Nothing is transmitted by the app itself — the issue opens in the
+       default browser (desktop: shell.openExternal via the bridge; PWA:
+       window.open), where the user reviews and submits it. */
+    _openFeedback() {
+      const el = this.elements;
+      if (!el.feedbackModal) return;
+      el.feedbackType.value = "Bug report";
+      el.feedbackText.value = "";
+      el.feedbackEmail.value = "";
+      this._openModal(el.feedbackModal);
+      el.feedbackText.focus();
+    },
+
+    async _sendFeedback() {
+      const el = this.elements;
+      const text = (el.feedbackText.value || "").trim();
+      if (!text) {
+        this.toast("Write a short message first", "error");
+        return;
+      }
+      const type = el.feedbackType.value;
+      const email = (el.feedbackEmail.value || "").trim();
+      const title = (type === "Bug report" ? "[Bug] " : type === "Feature request" ? "[Feature] " : "") +
+        text.split(/\n/)[0].slice(0, 80);
+      // environment block — everything a maintainer needs to reproduce
+      const env = [
+        "**Environment**",
+        "- Volt " + (window.__VOLT_VERSION || "dev"),
+        "- " + (global.voltDesktop ? "Electron desktop" : "Browser / PWA"),
+        "- OS: " + (navigator.userAgentData && navigator.userAgentData.platform ? navigator.userAgentData.platform : navigator.platform),
+        "- " + navigator.userAgent.replace(/\s+/g, " ").slice(0, 160),
+      ];
+      if (this.currentDocInfo && this.currentDocInfo.name) env.push("- Document: " + this.currentDocInfo.name);
+      const body = text + "\n\n---\n\n" + env.join("\n") + (email ? "\n\n**Contact:** " + email : "");
+      const url = "https://github.com/cyborgpulsedev/volt/issues/new?labels=" +
+        encodeURIComponent(type === "Bug report" ? "bug" : type === "Feature request" ? "enhancement" : "feedback") +
+        "&title=" + encodeURIComponent(title) +
+        "&body=" + encodeURIComponent(body);
+      this._closeModal(el.feedbackModal);
+      try {
+        if (global.voltDesktop && global.voltDesktop.openUrl) {
+          await global.voltDesktop.openUrl(url);
+        } else {
+          window.open(url, "_blank", "noopener");
+        }
+        this.toast("Feedback draft opened — review & submit on GitHub", "ok");
+      } catch (e) {
+        window.open(url, "_blank", "noopener");
+        this.toast("Feedback draft opened in your browser", "ok");
+      }
     },
 
     /* ── desktop auto-update banner (electron-updater) ────────
@@ -1258,7 +1366,9 @@
           el.panelPages.hidden = tab.dataset.tab !== "pages";
           el.panelOutline.hidden = tab.dataset.tab !== "outline";
           el.panelNotes.hidden = tab.dataset.tab !== "notes";
+          el.panelBm.hidden = tab.dataset.tab !== "bookmarks";
           if (tab.dataset.tab === "notes") Volt.Ann.refreshNotesList();
+          if (tab.dataset.tab === "bookmarks") Volt.Bm.refreshList();
           if (tab.dataset.tab === "pages") this._renderThumbs();
         });
       });
@@ -2517,6 +2627,7 @@
       for (const e of plan) { pos++; if (e.kind === "doc") map[e.oldPage] = pos; }
       const s = this._captureDocState();
       if (s && Array.isArray(s.ann)) s.ann = Utils.remapAnnotations(s.ann, map);
+      if (s && Volt.Bm && Array.isArray(s.bm)) s.bm = Utils.remapBookmarks(s.bm, map);
       this._restoreState = s;
       this._resetPageManager();
       this._closeModal(this.elements.pagesModal);
@@ -3031,6 +3142,7 @@
         ["Focus search", "Ctrl+F"],
         ["Next / previous match", "Enter / Shift+Enter"],
         ["Toggle sidebar", "Ctrl+B"],
+        ["Bookmarks — add / edit / remove / find", "Ctrl+Shift+B"],
         ["Toggle AI chat", "Ctrl+J"],
         ["Manage pages", "Ctrl+Shift+P"],
         ["Open Volt / View / Tools / Markup menu", "Alt+B / Alt+V / Alt+T / Alt+M"],
@@ -3099,8 +3211,9 @@
         }
       }
       const go = (step) => this._setupShow(step);
-      el.setupBannerGo.addEventListener("click", () => { el.setupBanner.hidden = true; this.openSetup(); });
-      el.setupBannerLater.addEventListener("click", () => this._dismissSetupBanner());
+      if (el.startHint) {
+        el.startHint.addEventListener("click", () => this._startHintClick());
+      }
       el.setupSkip.addEventListener("click", () => { this._markSetupDone(false); this._closeModal(el.setupModal); });
       el.setupNext0.addEventListener("click", () => go(1));
       el.setupNext1.addEventListener("click", () => go(2));
@@ -3111,18 +3224,52 @@
       });
     },
 
-    /** First-run offer: show the banner only when setup was never answered
-        (force bypasses the smoke suppression so the self-test can probe it). */
-    _maybeShowSetupBanner(force) {
+    /** First-run hint (replaces the old setup-banner popup): when setup was
+        never answered, a small pill appears in the blank toolbar area, holds
+        for a moment, then slides left behind the Volt ▾ menu. It plays once,
+        needs no dismissal, and never blocks reading. (force bypasses the
+        smoke suppression so the self-test can probe it.) */
+    _maybeShowStartHint(force) {
       const el = this.elements;
-      if (!el.setupBanner) return;
+      if (!el.startHint) return;
       if (!force && new URLSearchParams(location.search).has("smoke")) return;
       try { if (localStorage.getItem(SETUP_KEY) !== null) return; } catch (e) { return; }
-      el.setupBanner.hidden = false;
+      const hint = el.startHint;
+      hint.hidden = false;
+      hint.dataset.playing = "1";
+      // fade in, hold, then glide left to slide behind the brand menu
+      hint.animate([
+        { opacity: 0, transform: "translateX(16px)" },
+        { opacity: 1, transform: "translateX(0)" },
+      ], { duration: 480, easing: "ease-out", delay: 900, fill: "backwards" });
+      const slide = () => {
+        if (hint.hidden) return; // clicked away while waiting
+        let dx = 40;
+        const brand = document.getElementById("btn-brand");
+        if (brand && brand.getClientRects().length) {
+          const b = brand.getBoundingClientRect();
+          const h = hint.getBoundingClientRect();
+          dx = Math.max(40, h.left - b.left + 8); // travel past the brand's right edge
+        }
+        const anim = hint.animate([
+          { opacity: 1, transform: "translateX(0)" },
+          { opacity: 0, transform: `translateX(${-dx}px)` },
+        ], { duration: 900, easing: "cubic-bezier(.55,0,.7,.35)", fill: "forwards" });
+        hint.dataset.playing = "0";
+        anim.onfinish = () => { hint.hidden = true; }; // free the toolbar space it held
+      };
+      this._startHintTimer = setTimeout(slide, 900 + 480 + 3400);
     },
-    _dismissSetupBanner() {
-      this._markSetupDone(false);
-      this.elements.setupBanner.hidden = true;
+    _startHintClick() {
+      const hint = this.elements.startHint;
+      if (this._startHintTimer) { clearTimeout(this._startHintTimer); this._startHintTimer = null; }
+      if (hint) {
+        hint.getAnimations().forEach((a) => a.cancel());
+        hint.hidden = true;
+        delete hint.dataset.playing;
+      }
+      this._markSetupDone(false); // engaged — the hint won't replay on launch
+      this._openHelp("getting-started");
     },
     _markSetupDone(done) {
       try { localStorage.setItem(SETUP_KEY, JSON.stringify({ done: !!done, ts: Date.now() })); } catch (e) { /* ignore */ }
@@ -3293,6 +3440,7 @@
       if (!this.currentDoc) return;
       this._renderVisible();
       this._updateStatus();
+      this._schedulePageSnap(); // one-page mode: rest on page boundaries
     },
 
     /* ── document lifecycle ────────────────────────────────── */
@@ -3483,6 +3631,11 @@
       this.elements.app.classList.add("has-doc");
       this.rendered.clear();
       this.thumbRendered.clear();
+      // a stale book-flip tween must not yank a NEW document — cancel it
+      for (const t of this._flipTimers) clearTimeout(t);
+      this._flipTimers = [];
+      this._flipping = false;
+      this._wheelAnchor = null; // a new doc invalidates any pending zoom anchor
       this._keepAllRendered = false; // a new doc (or a rotate) re-renders from the viewport
       this._clearSelToast(); // a stale "Selected …" count from the previous doc shouldn't linger
       this._thumbSel = null; // a new document invalidates the multi-selection
@@ -3498,6 +3651,7 @@
       this.elements.searchCount.textContent = "";
       this.zoom = 1;
       this.zoomMode = "fit-width";
+      this._syncViewMode(); // re-apply the persisted page mode to the fresh pages container
       // rotDelta is deliberately NOT reset here: rotate() calls _docReady to
       // re-render, and a disk reload restores the captured rotation AFTER this
       // point (see _restoreDocState) — zeroing it here made R / the rotate
@@ -3534,6 +3688,7 @@
         if (Volt.OCR && Volt.OCR._syncLangUI) Volt.OCR._syncLangUI(Volt.OCR.lang());
       }
       Volt.Ann.loadForDoc(this.currentDocInfo);
+      if (Volt.Bm) Volt.Bm.loadForDoc(this.currentDocInfo); // bookmarks follow the same doc identity
       Volt.AI._pageTexts = null;
       Volt.AI._closeDocPopover();
       this._hideRestoreSummary(); // a stale summary from a previous restore must not linger on a new doc
@@ -3592,6 +3747,7 @@
       if (!this.currentDoc) return null;
       return {
         ann: Volt.Ann.list ? Utils.clone(Volt.Ann.list) : [],
+        bm: Volt.Bm && Volt.Bm.list ? Utils.clone(Volt.Bm.list) : [],
         ai: Volt.AI._docSettings ? Volt.AI._docSettings() : null,
         chat: Array.isArray(Volt.AI.messages) ? Utils.clone(Volt.AI.messages.slice(-Volt.AI._historyLimit())) : [],
         zoom: this.zoom,
@@ -3612,6 +3768,13 @@
       if (Array.isArray(s.ann)) {
         Volt.Ann.list = s.ann;
         Volt.Ann._afterChange(); // saves to the new volt:ann: key, re-renders
+      }
+      // bookmarks → the new identity's storage key + live list (same reload
+      // that keeps annotations alive must keep the jump marks too)
+      if (Volt.Bm && Array.isArray(s.bm)) {
+        Volt.Bm.list = s.bm;
+        Volt.Bm._save(); // persist to the NEW volt:bm: key before rendering
+        Volt.Bm.refreshAll();
       }
       // AI overrides + chat → the new volt:ai:doc: / volt:ai:chat: keys
       if (s.ai && (s.ai.model || s.ai.maxContextChars || s.ai.systemPrompt)) {
@@ -3689,14 +3852,50 @@
     _layoutPages() {
       if (!this.currentDoc || !this.pageDims.length) return;
       const GAP = 30; // px between pages incl. label
+      const spread = this.viewMode === "spread";
+      this.elements.pages.classList.toggle("pages-spread", spread);
       let top = 18;
+      let lastTop = 18; // top of the LAST row / page (its own top must be scrollable)
+      let widestRow = 0;
       this.pageLayout = [];
-      for (let n = 0; n < this.pageDims.length; n++) {
-        const h = this.pageDims[n].h * this.zoom;
-        this.pageLayout.push({ top, height: h });
-        top += h + GAP;
+      if (!spread) {
+        for (let n = 0; n < this.pageDims.length; n++) {
+          const h = this.pageDims[n].h * this.zoom;
+          this.pageLayout.push({ top, height: h });
+          lastTop = top;
+          top += h + GAP;
+        }
+        this.elements.pages.style.width = ""; // back to the CSS max-content
+      } else {
+        // rows of two: pages (1,2), (3,4), … — both pages of a row share the
+        // row's top (the flex-wrap + gap layout mirrors this geometry, so the
+        // visibility range and the rendered offsets always agree)
+        for (let n = 0; n < this.pageDims.length; n += 2) {
+          const wA = this.pageDims[n].w * this.zoom;
+          const hA = this.pageDims[n].h * this.zoom;
+          const wB = n + 1 < this.pageDims.length ? this.pageDims[n + 1].w * this.zoom : 0;
+          const hB = n + 1 < this.pageDims.length ? this.pageDims[n + 1].h * this.zoom : 0;
+          const rowH = Math.max(hA, hB);
+          widestRow = Math.max(widestRow, wA + wB + GAP);
+          this.pageLayout.push({ top, height: hA, row: true });
+          if (n + 1 < this.pageDims.length) this.pageLayout.push({ top, height: hB, row: true });
+          lastTop = top;
+          top += rowH + GAP;
+        }
+        // cap the container at the widest PAIR (+ its 14px side paddings) so
+        // flex-wrap breaks after two pages. The CSS `width: max-content`
+        // would size to ALL pages on one line — the smoke caught the whole
+        // sample doc laying out as a single row.
+        const scroller = this.elements.scroller;
+        this.elements.pages.style.width = Math.max(scroller.clientWidth, widestRow + 28) + "px";
       }
-      this.elements.pages.style.height = (top + 40) + "px";
+      // the app is box-sizing: border-box, so an explicit height must leave
+      // room for the paddings AND for the LAST row's top to be reachable
+      // (max scroll = height − clientHeight ≥ lastTop, or goToPage can't land
+      // on the final page — the smoke caught the last spread being unreachable)
+      const scroller = this.elements.scroller;
+      const needed = lastTop + scroller.clientHeight;
+      this.elements.pages.style.height = Math.max(top + 40, needed) + "px";
     },
 
     getViewportForPage(pageNum) {
@@ -3820,6 +4019,9 @@
     _updatePagePosition(wrap, pageNum) {
       const p = this.pageLayout[pageNum - 1];
       if (!p) return;
+      // in spread mode the pair rows are placed by flex-wrap + gap — margins
+      // would fight the row geometry, so the container's class owns it
+      if (this.viewMode === "spread") { wrap.style.marginTop = ""; return; }
       wrap.style.marginTop = (p.top - (pageNum > 1 ? this.pageLayout[pageNum - 2].top + this.pageLayout[pageNum - 2].height : 0)) + "px";
     },
 
@@ -3865,6 +4067,9 @@
       container._voltTC = textContent;
       if (Volt.Ann && Volt.Ann.annotateLayerFonts) Volt.Ann.annotateLayerFonts(page, container, textContent);
       if (Volt.Ann && Volt.Ann.applyTextEditsToLayer) Volt.Ann.applyTextEditsToLayer(container, pageNum);
+      // redactions hide the covered spans on screen (unselectable, like the
+      // exported PDF where their text is removed from the content stream)
+      if (Volt.Ann && Volt.Ann.applyRedactionsToLayer) Volt.Ann.applyRedactionsToLayer(container, pageNum);
       // an image-only (scanned) page renders NO spans — overlay the stored OCR
       // words as real selectable text, positioned from their PDF-space bboxes
       // through the page's current viewport. Runs on every render (zoom,
@@ -3938,6 +4143,7 @@
     /* ── annotations overlay ───────────────────────────────── */
     _drawOverlay(wrap, pageNum) {
       Volt.Ann.renderOverlay(wrap, pageNum);
+      if (Volt.Bm) Volt.Bm.renderMarkers(wrap, pageNum); // bookmark ribbons on this page
       this._drawSearchHighlights(wrap, pageNum);
     },
     renderAllAnnotations() {
@@ -3955,6 +4161,113 @@
       if (!this.pageDims.length) return;
       this.zoomMode = "fit-page";
       this._applyFitZoom();
+    },
+
+    /* ── page mode (continuous scroll / one page / two pages) ── */
+    _syncViewMode() {
+      const el = this.elements;
+      if (el.btnModeContinuous) el.btnModeContinuous.classList.toggle("checked", this.viewMode === "continuous");
+      if (el.btnModeOne) el.btnModeOne.classList.toggle("checked", this.viewMode === "one");
+      if (el.btnModeSpread) el.btnModeSpread.classList.toggle("checked", this.viewMode === "spread");
+      if (el.pages) el.pages.classList.toggle("pages-spread", this.viewMode === "spread");
+    },
+    setViewMode(mode) {
+      if (mode !== "continuous" && mode !== "one" && mode !== "spread") mode = "continuous";
+      if (mode === this.viewMode) return;
+      this.viewMode = mode;
+      try { localStorage.setItem("volt:view-mode", mode); } catch (e) { /* ignore */ }
+      this._syncViewMode();
+      // a mode switch changes the page geometry — a pending Ctrl+wheel zoom
+      // anchor (captured against the OLD layout) must not yank the view when
+      // its page re-renders under the new mode
+      this._wheelAnchor = null;
+      if (!this.currentDoc || !this.pageDims.length) return;
+      // the layout geometry changes with the mode (and fit-width means a
+      // different scale for a spread) — recompute, then re-render from scratch
+      if (this.zoomMode !== "custom") {
+        this._applyFitZoom(); // disposes + re-renders at the new scale
+      } else {
+        this._layoutPages();
+        for (const n of [...this.rendered.keys()]) this._disposePage(n);
+        this.pendingRender.clear();
+        this._renderVisible();
+      }
+      if (mode === "one") this._snapToPage(); // land exactly on a page boundary
+    },
+
+    /* One-page mode: scrolling rests on page boundaries — a scroll gesture
+       settles on the nearest page top (or the very top / bottom of the
+       document), so each scroll moves one page at a time. PageDown / Space /
+       arrows already jump top-to-top via goToPage; this catches wheel and
+       touch scrolling. The snap is a settle action (debounced), so it never
+       fights an active drag — and it re-checks the target on arrival, so it
+       terminates instead of oscillating. */
+    _schedulePageSnap() {
+      if (this.viewMode !== "one") return;
+      if (this._snapAnimating) return; // a snap tween is already landing
+      if (this._pageSnapTimer) clearTimeout(this._pageSnapTimer);
+      this._pageSnapTimer = setTimeout(() => { this._pageSnapTimer = null; this._snapToPage(); }, 160);
+    },
+    _snapToPage() {
+      const scroller = this.elements.scroller;
+      if (!scroller || !this.pageLayout.length || this._snapAnimating) return;
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      // candidates: the document top, every page top, and the document bottom
+      let best = 0, bestD = Math.abs(scroller.scrollTop);
+      for (const p of this.pageLayout) {
+        const d = Math.abs(scroller.scrollTop - p.top);
+        if (d < bestD) { bestD = d; best = p.top; }
+      }
+      const dEnd = Math.abs(scroller.scrollTop - max);
+      if (dEnd < bestD) { bestD = dEnd; best = max; }
+      if (bestD < 4) return; // already on a boundary
+      // glide to the boundary with a short rAF tween. (The compositor's
+      // smooth scrollTo stalls in an unfocused/occluded window — the smoke
+      // caught it — and this gives a consistent, bounded ease-out everywhere.)
+      // If the user scrolls mid-tween, hand control back and let the debounce
+      // re-snap once they pause.
+      const from = scroller.scrollTop, delta = best - from, t0 = performance.now();
+      const dur = Math.min(350, 120 + Math.abs(delta) * 0.3);
+      this._snapAnimating = true;
+      const step = (t) => {
+        const k = Math.min(1, (t - t0) / dur);
+        const target = from + delta * (1 - Math.pow(1 - k, 3)); // ease-out cubic
+        scroller.scrollTop = target;
+        if (k < 1 && Math.abs(scroller.scrollTop - target) > 0.5) {
+          this._snapAnimating = false; // something else moved it — stop fighting
+          return;
+        }
+        if (k < 1) requestAnimationFrame(step);
+        else this._snapAnimating = false;
+      };
+      requestAnimationFrame(step);
+    },
+
+    /* Book flip (Two pages): turning the spread like a page of a book — the
+       current pair rotates away on the spine axis, then the next pair lands
+       in from the same side. Driven by ←/→, PageUp/PageDown (via
+       prevPage/nextPage) and the edge-click zones; only meaningful in spread
+       mode. One flip at a time; timers are cleared when the document changes
+       so a stale flip can't yank a new doc. */
+    _flipSpread(dir) {
+      if (this.viewMode !== "spread" || !this.pageLayout.length || this._flipping) return;
+      const cur = this._currentPageNum();
+      const rowStart = cur % 2 === 1 ? cur : cur - 1; // the current spread's left page
+      const next = rowStart + (dir > 0 ? 2 : -2);
+      if (next < 1 || next > this.pageLayout.length) return; // no spread to flip to
+      const pages = this.elements.pages;
+      this._flipping = true;
+      pages.classList.remove("book-flip-in");
+      pages.classList.add("book-flip-out");
+      this._flipTimers.push(setTimeout(() => {
+        pages.classList.remove("book-flip-out");
+        this.goToPage(next, false); // instant jump — masked by the turn
+        pages.classList.add("book-flip-in");
+        this._flipTimers.push(setTimeout(() => {
+          pages.classList.remove("book-flip-in");
+          this._flipping = false;
+        }, 240));
+      }, 190));
     },
     /** A pane resize changes the viewer's available width exactly like a
         window resize does — in fit-width/fit-page the zoom must recompute or
@@ -3976,13 +4289,21 @@
     _applyFitZoom() {
       const scroller = this.elements.scroller;
       const pad = 60;
+      const GAP = 30; // must match _layoutPages
       const w = Math.max(200, scroller.clientWidth - pad);
       const h = Math.max(200, scroller.clientHeight - pad);
       const maxW = Math.max(...this.pageDims.map((d) => d.w));
       const maxH = Math.max(...this.pageDims.map((d) => d.h));
       let z = 1;
-      if (this.zoomMode === "fit-width") z = w / maxW;
-      else if (this.zoomMode === "fit-page") z = Math.min(w / maxW, h / maxH);
+      if (this.zoomMode === "fit-width") {
+        // in spread mode the widest PAIR must fit the pane (both pages + gap),
+        // so each page is scaled to roughly half the width
+        z = this.viewMode === "spread" ? (w - GAP) / (2 * maxW) : w / maxW;
+      } else if (this.zoomMode === "fit-page") {
+        z = this.viewMode === "spread"
+          ? Math.min((w - GAP) / (2 * maxW), h / maxH)
+          : Math.min(w / maxW, h / maxH);
+      }
       this._setZoom(z, false);
     },
     setZoom(z) {
@@ -4053,8 +4374,17 @@
       this.elements.scroller.scrollTo({ top: p.top, behavior: smooth ? "smooth" : "auto" });
       this._updateThumbActive();
     },
-    nextPage() { this.goToPage(this._currentPageNum() + 1); },
-    prevPage() { this.goToPage(this._currentPageNum() - 1); },
+    // in Two-pages mode the page is the SPREAD — PageDown / Space / arrows
+    // turn the whole pair (with the book-flip animation) instead of walking
+    // one page into the middle of the next spread
+    nextPage() {
+      if (this.viewMode === "spread") { this._flipSpread(1); return; }
+      this.goToPage(this._currentPageNum() + 1);
+    },
+    prevPage() {
+      if (this.viewMode === "spread") { this._flipSpread(-1); return; }
+      this.goToPage(this._currentPageNum() - 1);
+    },
     firstPage() { this.goToPage(1); },
     lastPage() { this.goToPage(this.pageLayout.length); },
     _currentPageNum() {
@@ -4652,6 +4982,40 @@
           const bytes = await Volt.Ann.toAnnotatedPdf();
           Utils.download(new Blob([bytes], { type: "application/pdf" }), base + "-annotated.pdf");
           this.toast("Annotated PDF exported", "ok");
+        } else if (kind === "secure") {
+          this._closeModal(el.exportModal);
+          this._openModal(el.secureModal);
+          el.securePass.value = "";
+          el.securePass2.value = "";
+          el.securePermCopy.checked = true;
+          el.securePermPrint.checked = true;
+          el.securePermModify.checked = true;
+          el.securePass.focus();
+        } else if (kind === "sign") {
+          // digital signature — pick a PKCS#12 certificate, enter its
+          // password, choose the page, and Volt.Sign builds a real /Sig
+          // field (detached PKCS#7 / CMS, /ByteRange) over the annotated export
+          this._closeModal(el.exportModal);
+          this._openModal(el.signModal);
+          el.signPage.value = this._currentPageNum() || 1;
+          el.signCert.value = this._signCertPath
+            ? this._signCertPath.split(/[\\/]/).pop()
+            : (this._signCert ? this._signCert.name : "");
+          el.signPass.value = "";
+          el.signPass.focus();
+        } else if (kind === "pdfa") {
+          // ISO 19005-1 (PDF/A-1b): the annotated export re-stamped with the
+          // archival metadata (XMP pdfaid, OutputIntent + sRGB profile,
+          // Info, /ID) and a classic xref — the smoke verifies the required
+          // elements survive into the file
+          this.toast("Preparing PDF/A-1b export…", "ok");
+          const bytes = await Volt.Ann.toAnnotatedPdf();
+          const pdfa = await Volt.ISO.toPdfA1b(bytes, {
+            title: (this.currentDocInfo?.name || "document").replace(/\.pdf$/i, ""),
+            producer: "Volt" + (global.Volt.VERSION ? " " + global.Volt.VERSION : ""),
+          });
+          Utils.download(new Blob([pdfa], { type: "application/pdf" }), base + "-pdfa.pdf");
+          this.toast("PDF/A-1b (ISO 19005-1) exported", "ok");
         } else if (kind === "md") {
           Utils.download(new Blob([Volt.Ann.toMarkdown()], { type: "text/markdown" }), base + "-notes.md");
           this.toast("Markdown notes exported", "ok");
@@ -4745,6 +5109,99 @@
         this.toast("Export failed: " + (e.message || e), "error");
       }
       this._closeModal(el.exportModal);
+    },
+
+    /** Lock the annotated export with the PDF security handler (Export ▸
+        Secure PDF…). Validates the password pair, applies the permission
+        checkboxes, then hands the bytes to Volt.Secure.lock and downloads.
+        Redactions (if any) are already burned into the annotated PDF, so the
+        locked file carries them too. */
+    async _doSecureExport() {
+      const el = this.elements;
+      const pass = el.securePass.value;
+      const pass2 = el.securePass2.value;
+      if (pass !== pass2) {
+        this.toast("Passwords don't match", "error");
+        return;
+      }
+      const copy = el.securePermCopy.checked;
+      const print = el.securePermPrint.checked;
+      const modify = el.securePermModify.checked;
+      if (!pass && copy && print && modify) {
+        this.toast("Add a password or tick at least one restriction", "error");
+        return;
+      }
+      this._closeModal(el.secureModal);
+      const base = (this.currentDocInfo?.name || "document").replace(/\.pdf$/i, "");
+      try {
+        this.toast("Locking PDF…", "ok");
+        const bytes = await Volt.Ann.toAnnotatedPdf();
+        const locked = Volt.Secure.lock(bytes, {
+          userPassword: pass || "",
+          ownerPassword: pass || "",
+          permissions: { copying: copy, printing: print, modifying: modify, annotations: modify },
+        });
+        Utils.download(new Blob([locked], { type: "application/pdf" }), base + "-secured.pdf");
+        this.toast("Secured PDF exported — password required to open", "ok");
+      } catch (e) {
+        this.toast("Secure export failed: " + (e.message || e), "error");
+      }
+    },
+
+    /** Pick the signing certificate: native dialog in the desktop app (the
+        path feeds volt:read-pfx), or the hidden file input in the PWA. */
+    async _pickSignCert() {
+      const el = this.elements;
+      if (global.voltDesktop && global.voltDesktop.pickPfx) {
+        const path = await global.voltDesktop.pickPfx();
+        if (path) {
+          this._signCertPath = path;
+          this._signCert = null;
+          el.signCert.value = path.split(/[\\/]/).pop();
+        }
+      } else {
+        el.signCertFile.click();
+      }
+    },
+
+    /** Attach a real certificate signature to the annotated export (Export ▸
+        Digitally sign PDF…). Reads the chosen PKCS#12 (path via the desktop
+        bridge, or the picked File in the PWA), then hands the bytes to
+        Volt.Sign.signPdf — a standards-compliant /Sig field with a /ByteRange
+        and a detached PKCS#7 (CMS) signature that Acrobat and pdf.js verify. */
+    async _doSignExport() {
+      const el = this.elements;
+      const base = (this.currentDocInfo?.name || "document").replace(/\.pdf$/i, "");
+      let pfxBytes, certName;
+      try {
+        if (this._signCert) {
+          pfxBytes = new Uint8Array(await this._signCert.arrayBuffer());
+          certName = this._signCert.name;
+        } else if (this._signCertPath && global.voltDesktop && global.voltDesktop.readPfx) {
+          const r = await global.voltDesktop.readPfx(this._signCertPath);
+          pfxBytes = new Uint8Array(r.data);
+          certName = r.name;
+        } else {
+          this.toast("Choose a certificate (PKCS#12) first", "error");
+          return;
+        }
+        const page = parseInt(el.signPage.value, 10) || 1;
+        const reason = el.signReason.value.trim();
+        this._closeModal(el.signModal);
+        this.toast("Signing PDF…", "ok");
+        const bytes = await Volt.Ann.toAnnotatedPdf();
+        const signed = await Volt.Sign.signPdf(bytes, {
+          pfxBytes,
+          password: el.signPass.value,
+          page,
+          reason: reason || "Digitally signed in Volt",
+        });
+        Utils.download(new Blob([signed], { type: "application/pdf" }), base + "-signed.pdf");
+        this.toast("Digitally signed PDF exported — certificate: " + certName, "ok");
+      } catch (e) {
+        this._openModal(el.signModal);
+        this.toast("Signing failed: " + (e.message || e), "error");
+      }
     },
 
     async _importAnnotations(file) {
@@ -4983,6 +5440,17 @@
         this._onScroll();
       }, 260);
     },
+    /** Open the sidebar's Bookmarks tab (used by the toolbar button, the page
+        ribbon markers, and Ctrl+Shift+B). Re-opening on the same tab clears
+        the find box so the list shows everything again. */
+    openBookmarksPanel() {
+      const el = this.elements;
+      if (document.body.classList.contains("sidebar-hidden")) this.toggleSidebar();
+      const tab = [...el.sideTabs].find((t) => t.dataset.tab === "bookmarks");
+      if (tab) tab.click();
+      if (Volt.Bm) { Volt.Bm._filter = ""; if (el.bmFilter) el.bmFilter.value = ""; Volt.Bm.refreshList(); }
+      if (el.bmFilter) el.bmFilter.focus();
+    },
     toggleAI(force) {
       const show = force !== undefined ? force : document.body.classList.contains("ai-hidden");
       document.body.classList.toggle("ai-hidden", !show);
@@ -5142,6 +5610,7 @@
             if (k === "o") { e.preventDefault(); this.elements.fileInput.click(); return; }
             if (k === "j") { e.preventDefault(); this.toggleAI(); return; }
             if (k === "b") { e.preventDefault(); this.toggleSidebar(); return; }
+            if (k === "b" && e.shiftKey) { e.preventDefault(); this.openBookmarksPanel(); return; }
             if (k === "p" && e.shiftKey) { e.preventDefault(); this.openPagesManager(); return; }
           }
           if (e.key === "Escape" && target.id === "search-input") { this.clearSearch(); target.value = ""; target.blur(); }
@@ -5170,6 +5639,7 @@
           }
           if (k === "j") { e.preventDefault(); this.toggleAI(); return; }
           if (k === "b") { e.preventDefault(); this.toggleSidebar(); return; }
+          if (k === "b" && e.shiftKey) { e.preventDefault(); this.openBookmarksPanel(); return; }
           if (k === "d" && !e.shiftKey) {
             // duplicate the selected highlight (area or text) with a slight
             // offset — repeated presses stamp a column for form repetition.
@@ -5267,11 +5737,14 @@
           case "Home": e.preventDefault(); this.firstPage(); break;
           case "End": e.preventDefault(); this.lastPage(); break;
           case "ArrowRight":
-            if (Volt.Ann._selectedId) { e.preventDefault(); Volt.Ann.nudgeSelected(e.shiftKey ? 10 : 1, 0); }
+            // Two-pages mode: ←/→ turn the spread like a book
+            if (this.viewMode === "spread") { if (!isButton) e.preventDefault(); this._flipSpread(1); }
+            else if (Volt.Ann._selectedId) { e.preventDefault(); Volt.Ann.nudgeSelected(e.shiftKey ? 10 : 1, 0); }
             else if (this.search) { e.preventDefault(); this.searchNext(); }
             break;
           case "ArrowLeft":
-            if (Volt.Ann._selectedId) { e.preventDefault(); Volt.Ann.nudgeSelected(-(e.shiftKey ? 10 : 1), 0); }
+            if (this.viewMode === "spread") { if (!isButton) e.preventDefault(); this._flipSpread(-1); }
+            else if (Volt.Ann._selectedId) { e.preventDefault(); Volt.Ann.nudgeSelected(-(e.shiftKey ? 10 : 1), 0); }
             else if (this.search) { e.preventDefault(); this.searchPrev(); }
             break;
           case "+": case "=": this.setZoom(this.zoom * 1.2); break;
@@ -5315,6 +5788,20 @@
         const wrap = e.target.closest(".page-wrap");
         if (!wrap) return;
         if (Volt.Ann.onAreaContextMenu(e, wrap)) e.preventDefault();
+      });
+      // book flip: in Two-pages mode, clicking the left/right margin of the
+      // viewer turns the spread like a book. Never fires on a page itself
+      // (annotation / selection / text interactions keep those clicks), on
+      // controls, or under a modal.
+      this.elements.pages.addEventListener("click", (e) => {
+        if (this.viewMode !== "spread") return;
+        if (this._openModalEl() || this.elements.app.inert) return;
+        if (e.target.closest && e.target.closest(".page-wrap, button, a, input, [role=button]")) return;
+        const r = this.elements.pages.getBoundingClientRect();
+        const zone = Math.max(60, r.width * 0.14);
+        const x = e.clientX - r.left;
+        if (x < zone) this._flipSpread(-1);
+        else if (x > r.width - zone) this._flipSpread(1);
       });
       // the status-bar page-range readout tracks the text selection LIVE —
       // selectionchange fires on every mutation (mouse drags, the Ctrl+A / A

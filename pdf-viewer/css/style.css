@@ -254,7 +254,34 @@ body {
 
 .tb-group { display: flex; align-items: center; gap: 2px; }
 .tb-sep { width: 1px; height: 22px; background: var(--border-soft); margin: 0 8px; }
-.tb-spacer { flex: 1; }
+/* the spacer centers the first-run hint in the toolbar's blank area */
+.tb-spacer { flex: 1; display: flex; align-items: center; justify-content: center; min-width: 0; }
+
+/* First-run hint — replaces the setup-banner popup: a small pill in the
+   blank toolbar area that plays once (fade in → hold → slide left behind
+   the Volt ▾ menu) and needs no dismissal. Opacity starts at 1 so the pill
+   is still readable if Web Animations is unavailable; the JS keyframes
+   (with backwards/forwards fill) own the fade-in and exit. */
+#start-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  max-width: 100%;
+  border: 1px solid rgba(124, 108, 255, 0.35);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: #b8aeff;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s;
+}
+#start-hint:hover { background: rgba(124, 108, 255, 0.22); color: #cfc9ff; }
+#start-hint:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .tb-btn {
   display: inline-flex;
@@ -364,6 +391,12 @@ body {
 .tb-menu-sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
 /* the annotation tools live in the Markup menu now — the active mode is
    highlighted inside the panel exactly like the old toolbar buttons */
+/* checked state (View ▾ page mode, theme): a persistent toggle shows the
+   current choice with a tinted background — matches .mode-btn.active below */
+.tb-menu-item.checked {
+  background: var(--accent-soft);
+  color: #b8aeff;
+}
 .tb-menu-item.mode-btn.active {
   background: var(--accent-soft);
   color: var(--accent);
@@ -948,6 +981,86 @@ body.sidebar-hidden .sidebar + #viewer { border-radius: 0; }
 .note-card .note-card-text.is-note { font-style: italic; color: var(--text-dim); }
 .notes-empty { color: var(--text-faint); font-size: 12px; text-align: center; padding: 24px 8px; }
 
+/* Bookmarks list */
+.bm-filter {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0 10px;
+  padding: 6px 9px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+}
+.bm-filter:focus { border-color: var(--accent); }
+.bm-list { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
+.bm-card {
+  background: var(--bg-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.12s;
+}
+.bm-card:hover { border-color: var(--border); transform: translateY(-1px); }
+.bm-card .bm-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+.bm-card .bm-ribbon { display: inline-flex; color: var(--accent); }
+.bm-card .bm-ribbon svg { width: 12px; height: 12px; fill: currentColor; }
+.bm-card .bm-page { font-weight: 600; color: var(--text-dim); }
+.bm-card .bm-card-body {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bm-card.editing .bm-card-body { white-space: normal; }
+.bm-card .bm-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+}
+.bm-card .bm-edit-row { display: flex; gap: 6px; margin-top: 6px; }
+
+/* bookmark ribbon on a rendered page (top-right corner) */
+.bm-marker {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: background 0.12s, transform 0.12s, outline 0.1s;
+}
+.bm-marker svg { width: 15px; height: 15px; fill: currentColor; }
+.bm-marker:hover { background: #fff; transform: scale(1.1); }
+
 .side-actions { display: flex; gap: 8px; padding-top: 6px; border-top: 1px solid var(--border-soft); }
 
 /* block actions: the First / Last / Move to… / Clear row that appears when
@@ -989,6 +1102,37 @@ body.sidebar-hidden .sidebar + #viewer { border-radius: 0; }
   min-width: 100%;
   margin: 0 auto;
 }
+
+/* Two-page mode (View ▾ → Two pages): pages pair up side by side like a
+   book — each row carries pages (1,2), (3,4), …. The container keeps its
+   explicit height (set by _layoutPages for the scrollbar) and its max-content
+   width (so a wide pair grows the pane and scrolls horizontally); flex-wrap
+   does the pairing, gap the 30px gutter, and 18px top padding matches the
+   single-column first-page offset (the _layoutPages top math starts at 18). */
+.pages.pages-spread {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+  align-content: flex-start;
+  gap: 30px 30px;
+  padding-top: 18px;
+}
+
+/* Book flip (Two pages): the whole spread turns on the spine axis like a
+   page of a book — out with a rotate/fade, then the next spread lands in
+   from the same side. Short and snappy; _flipSpread toggles the classes and
+   always removes them on completion. */
+@keyframes bookFlipOut {
+  from { transform: perspective(1400px) rotateY(0deg); opacity: 1; }
+  to   { transform: perspective(1400px) rotateY(-30deg); opacity: 0.25; }
+}
+@keyframes bookFlipIn {
+  from { transform: perspective(1400px) rotateY(28deg); opacity: 0.25; }
+  to   { transform: perspective(1400px) rotateY(0deg); opacity: 1; }
+}
+.pages.book-flip-out { animation: bookFlipOut 0.19s ease-in forwards; }
+.pages.book-flip-in  { animation: bookFlipIn 0.24s ease-out forwards; }
 
 /* Individual page */
 .page-wrap {
@@ -2653,6 +2797,67 @@ input[type="range"] { accent-color: var(--accent); }
 .export-check.locked:hover { background: transparent; }
 .export-check.locked input { opacity: 0.6; }
 
+/* Secure PDF modal: password fields + permission checkboxes */
+.secure-perms {
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(124, 108, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.secure-perms-title {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+.secure-perms .export-check { padding: 3px 6px; }
+
+/* Digital-signature modal: certificate row (path + Browse) */
+.sign-cert-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.sign-cert-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  opacity: 0.85;
+}
+
+/* Send-feedback modal: type select, message box, optional contact */
+.feedback-select, .feedback-text {
+  width: 100%;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.8px;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  margin-bottom: 10px;
+}
+.feedback-select:focus, .feedback-text:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.feedback-select option { background: var(--bg-3); }
+.feedback-text { resize: vertical; min-height: 90px; line-height: 1.45; }
+.feedback-env-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  line-height: 1.45;
+  margin-bottom: 12px;
+}
+
 .doc-override {
   margin-top: 4px;
   padding: 10px 12px 2px;
@@ -2861,7 +3066,6 @@ input[type="range"] { accent-color: var(--accent); }
   white-space: nowrap;
 }
 .reload-banner .mini-btn { flex: none; }
-.setup-banner { z-index: 212; } /* above the reload offer, below toasts */
 
 /* ═══════════════ SETUP WIZARD ═══════════════
    The first-run wizard (or Volt ▾ → Setup wizard…): four steps with a dot
@@ -3038,6 +3242,7 @@ body.drag-over #viewer::before {
    invisible-scroll rule still keeps every control reachable. */
 @media (max-width: 840px) {
   .tb-brand { display: none; }
+  #start-hint { display: none; } /* the blank area is gone — no room for the hint */
   #search-prev, #search-next, #search-clear { display: none; }
   #search-input { width: 36px; }
   #toolbar { gap: 0; }

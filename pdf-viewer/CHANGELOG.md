@@ -4,6 +4,55 @@ Each release is a `## x.y.z` section. The version banner tooltip shows the
 sections newer than the installed bundle, so a pending update tells you what
 changed before you restart.
 
+## 1.0.2
+
+- Page modes: **View ▾** picks how you read — **Continuous scroll** (pages
+  flow in one column, scroll freely), **One page** (scrolling rests on page
+  boundaries — one page per scroll), or **Two pages** (a book spread: pages
+  sit side by side in pairs, 1–2, 3–4, …, with fit-width/fit-page zoom
+  recalculated for the pair). The choice is remembered per user and comes
+  back on the next open.
+- Flip like a book: in **Two pages**, ← / →, PageUp/PageDown and clicks in
+  the left/right margin turn the spread with a page-turn animation — the
+  pair rotates away on the spine axis and the next one lands in.
+- Opening Volt no longer greets you with a popup to dismiss. On a fresh
+  profile a small pill appears in the blank toolbar area — **← Click here
+  to get started or for help** — fades in, holds, then slides away behind
+  the **Volt ▾** menu on its own (nothing to dismiss, reading is never
+  blocked). Clicking it opens **Help & guides**; engaging with it stops it
+  from replaying, and the Setup wizard stays under **Volt ▾ → Setup
+  wizard…**.
+- Feedback: **Volt ▾ → Send feedback…** drafts a GitHub issue on the public
+  repository with your message plus an attached environment block (version,
+  engine, OS, open document), opening in the default browser for review
+  before submitting — the app never transmits anything itself.
+- E-sign: **Export ▸ Digitally sign PDF…** attaches a real certificate
+  signature to the annotated export — an AcroForm `/Sig` field with a
+  `/ByteRange` and a detached PKCS#7 (CMS) SignedData that Acrobat and
+  pdf.js validate. The certificate comes from a local PKCS#12
+  (`.pfx`/`.p12`) file picked via the native dialog (or a file input in
+  the PWA); the whole chain runs in-process on Web Crypto — PKCS#12
+  parsing with the MAC verified (PBES1-3DES + PBES2-AES, with a pure-JS
+  TripleDES implementation checked against Node's crypto), CMS build,
+  and the byte surgery that patches the ByteRange + xref in place. The
+  smoke's `signProbe` signs with the dev certificate and re-verifies the
+  signature cryptographically in the renderer.
+- ISO PDF standards: **Export ▸ PDF/A-1b (ISO 19005-1)** produces an
+  archival-standard PDF — XMP metadata with the pdfaid part/conformance
+  pair, a /Metadata stream (uncompressed, as the standard demands), an
+  OutputIntent with an embedded sRGB ICC v2 profile, document info, a
+  trailer file identifier, embedded fonts and a classic xref. Built on
+  pure, unit-tested helpers (`buildSrgbIcc`, `pdfA1bXmp`,
+  `injectPdfTrailerId`), verified by the smoke's `isoProbe` (the required
+  elements are asserted in the exported bytes and the file re-opens
+  through pdf.js with its text intact). Semi-transparent annotation
+  overlays are the one thing a strict validator may flag — see the README
+- Bookmarks: mark any page to jump back to, with a per-document list in the
+  sidebar — add from the toolbar or `Ctrl+Shift+B`, rename labels inline,
+  remove one or clear all, and find them live by label or page number; a
+  small ribbon marks bookmarked pages, and bookmarks renumber when pages
+  are deleted or reordered
+
 ## 1.0.1
 
 - Security & stability: upgraded the Electron runtime (33 → 43, a 10-major

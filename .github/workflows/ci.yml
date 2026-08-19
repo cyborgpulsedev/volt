@@ -117,6 +117,11 @@ jobs:
       - name: Unit tests (utils, markdown, chunking, window-state, launcher rules, VBS)
         run: npm run test:utils
 
+      - name: E-sign unit tests (TripleDES, PKCS#12 parse, sign→verify chain)
+        # the PFX half soft-skips when the dev certificate isn't present
+        # (certs/ is gitignored) — CI stays green either way
+        run: npm run test:sign
+
       - name: Office export unit tests (CRC32, ZIP, DOCX/XLSX, tables)
         run: npm run test:office
 

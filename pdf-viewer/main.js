@@ -1155,12 +1155,12 @@ async function toolbarResizeStage(w) {
       // menu holds the annotation tools + insertions
       out.brandHas = ["btn-open", "btn-open-url", "btn-export", "btn-menu-settings", "btn-menu-help",
         "btn-check-updates", "btn-about", "btn-save-pdf", "btn-exit"].every(has);
-      out.viewHas = ["btn-fit-width", "btn-fit-page", "btn-rotate", "btn-theme-light", "btn-theme-dark"].every(has);
+      out.viewHas = ["btn-fit-width", "btn-fit-page", "btn-rotate", "btn-mode-continuous", "btn-mode-one", "btn-mode-spread", "btn-theme-light", "btn-theme-dark"].every(has);
       out.toolsHas = ["btn-ocr", "btn-ocr-lang", "btn-ocr-layer", "btn-readaloud"].every(has);
       out.markupHas = ["btn-sig", "btn-date", "btn-form"].every(has) &&
-        // Select / Highlight / Rect / Underline / Strike / Note / Text (7 tools —
-        // the Text tool joined the panel last; bump when a tool is added/removed)
-        [...document.querySelectorAll("#menu-markup-panel .mode-btn")].length === 7;
+        // Select / Highlight / Rect / Redact / Underline / Strike / Note / Text
+        // (8 tools — Redact joined the panel last; bump when a tool is added/removed)
+        [...document.querySelectorAll("#menu-markup-panel .mode-btn")].length === 8;
       // ARIA contract: every trigger is a menu button (haspopup + expanded +
       // controls pointing at its panel), every panel is role=menu, every item
       // role=menuitem, and all triggers START collapsed (aria-expanded=false)
@@ -1179,7 +1179,7 @@ async function toolbarResizeStage(w) {
       });
       aria.menuitems = ["btn-open", "btn-open-url", "btn-export", "btn-menu-settings", "btn-menu-help",
         "btn-check-updates", "btn-about", "btn-save-pdf", "btn-exit",
-        "btn-fit-width", "btn-fit-page", "btn-rotate", "btn-theme-light", "btn-theme-dark",
+        "btn-fit-width", "btn-fit-page", "btn-rotate", "btn-mode-continuous", "btn-mode-one", "btn-mode-spread", "btn-theme-light", "btn-theme-dark",
         "btn-ocr", "btn-ocr-lang", "btn-ocr-layer", "btn-readaloud", "btn-sig", "btn-date", "btn-form"].every((id) => document.getElementById(id).getAttribute("role") === "menuitem");
       aria.modeItems = [...document.querySelectorAll("#menu-markup-panel .mode-btn")]
         .every((b) => b.getAttribute("role") === "menuitem");
@@ -1218,6 +1218,9 @@ async function toolbarResizeStage(w) {
       document.dispatchEvent(kd({ key: "ArrowDown" }));
       out.kbNext = focusedId() === "btn-fit-page";
       document.dispatchEvent(kd({ key: "ArrowDown" })); // → rotate
+      document.dispatchEvent(kd({ key: "ArrowDown" })); // → Continuous scroll
+      document.dispatchEvent(kd({ key: "ArrowDown" })); // → One page
+      document.dispatchEvent(kd({ key: "ArrowDown" })); // → Two pages
       document.dispatchEvent(kd({ key: "ArrowDown" })); // → Light skin
       document.dispatchEvent(kd({ key: "ArrowDown" })); // → Dark skin
       document.dispatchEvent(kd({ key: "ArrowDown" })); // wraps to the first
@@ -1441,8 +1444,25 @@ function runSmokeTest(w) {
       const officeTmp2 = join(smokeProfileDir, "office-test.xlsx");
       const officeTmp3 = join(smokeProfileDir, "office-test.pptx");
       const officeTmp4 = join(smokeProfileDir, "office-test-subset.pptx");
-      const result = await w.webContents.executeJavaScript(`(async () => {
+      // the e-sign probe signs with the LOCAL dev certificate (certs/volt-dev.pfx
+      // is gitignored, so CI and PWA smoke runs soft-skip it — the renderer gets
+      // the path + password only when the file actually exists)
+      let signPfxPath = null, signPfxPass = "";
+      const signCertsDir = join(APP_ROOT, "certs");
+      if (existsSync(join(signCertsDir, "volt-dev.pfx"))) {
+        signPfxPath = join(signCertsDir, "volt-dev.pfx");
+        try {
+          const envText = readFileSync(join(APP_ROOT, ".env"), "utf8");
+          const m = /^CSC_KEY_PASSWORD=(.*)$/m.exec(envText);
+          if (m) signPfxPass = m[1].trim();
+        } catch (e) { /* password stays empty — the probe will fail the MAC check */ }
+      }
+      let result;
+      try {
+        result = await w.webContents.executeJavaScript(`(async () => {
         const SAMPLE_PDF = ${JSON.stringify(join(APP_ROOT, "samples", "sample.pdf"))};
+        const SIGN_PFX_PATH = ${JSON.stringify(signPfxPath)};
+        const SIGN_PFX_PASS = ${JSON.stringify(signPfxPass)};
         const WATCH_TMP_PATH = ${JSON.stringify(watchTmp ? watchTmp.target : null)};
         const WATCH_TMP = ${JSON.stringify(watchTmp ? basename(watchTmp.target) : null)};
         const DISK_TMP_PATH = ${JSON.stringify(watchTmp ? watchTmp.diskTarget : null)};
@@ -3656,7 +3676,7 @@ function runSmokeTest(w) {
             // the [hidden] rule, or a close path that never sets hidden=true)
             const modalCycle = { error: null, results: {} };
             try {
-              const ids = ["settings-modal", "help-modal", "url-modal", "export-modal", "restore-modal", "persona-modal", "pages-modal"];
+              const ids = ["settings-modal", "help-modal", "url-modal", "export-modal", "restore-modal", "persona-modal", "pages-modal", "feedback-modal"];
               for (const id of ids) {
                 const m = document.getElementById(id);
                 Volt.App._closeModal(m); // idempotent when already closed
@@ -3705,13 +3725,17 @@ function runSmokeTest(w) {
             helpC.allOk = helpC.navCount === true && helpC.opensOnSection === true &&
               helpC.navSwitches === true && helpC.unknownFallsBack === true &&
               helpC.closesClean === true && !helpC.error;
-            // ── setup wizard (first run / Volt ▾ → Setup wizard…) ──
-            // the one-time installer: a banner offers it on first run (Not
-            // now marks setup answered so it never nags again), the wizard
-            // walks four steps, the AI step reflects the configured model,
-            // and finishing applies the skin + marks volt:setup-done. The
-            // desktop shortcut/association checkbox is UNCHECKED here so the
-            // real PowerShell script never runs during the self-test.
+            // ── setup wizard + first-run hint (replaces the setup banner) ──
+            // the startup greeting is a small pill in the blank toolbar area
+            // that plays once and slides behind the Volt ▾ menu — never a
+            // dismissible popup. Smoke: the popup banner must be gone, the
+            // hint must NOT auto-play under ?smoke, force-play shows it, and
+            // clicking it engages (marks setup answered so it never replays)
+            // and opens Help (Getting started). The wizard itself walks four
+            // steps, the AI step reflects the configured model, and finishing
+            // applies the skin + marks volt:setup-done. The desktop
+            // shortcut/association checkbox is UNCHECKED here so the real
+            // PowerShell script never runs during the self-test.
             const setup = { error: null };
             const setupPrevTheme = localStorage.getItem("volt:theme");
             const setupPrevAi = { baseUrl: Volt.AI.settings.baseUrl, model: Volt.AI.settings.model };
@@ -3720,15 +3744,21 @@ function runSmokeTest(w) {
             const setupPrevSetup = localStorage.getItem("volt:setup-done");
             try {
               const S = Volt.App;
-              const sBanner = document.getElementById("setup-banner");
-              // smoke runs with ?smoke=1 → the banner must NOT auto-show
-              setup.bannerSuppressed = new URLSearchParams(location.search).has("smoke") && sBanner.hidden === true;
-              // force-show the first-run offer; Not now answers it + hides
+              const hint = document.getElementById("start-hint");
+              setup.noBannerPopup = document.getElementById("setup-banner") === null;
+              setup.hintPresent = !!hint;
+              // smoke runs with ?smoke=1 → the hint must NOT auto-play
+              setup.hintSuppressed = new URLSearchParams(location.search).has("smoke") &&
+                (!hint || hint.dataset.playing === undefined);
+              // force-play the first-run offer; clicking it opens Help and
+              // marks setup answered so the hint never replays
               localStorage.removeItem("volt:setup-done");
-              S._maybeShowSetupBanner(true);
-              setup.bannerShows = sBanner.hidden === false;
-              document.getElementById("setup-banner-later").click();
-              setup.bannerLater = sBanner.hidden === true &&
+              S._maybeShowStartHint(true);
+              setup.hintShows = !!hint && hint.hidden === false && hint.dataset.playing === "1";
+              hint.click();
+              setup.hintOpensHelp = document.getElementById("help-modal").hidden === false;
+              document.getElementById("help-close").click();
+              setup.hintReplaysStopped = !!hint && hint.hidden === true &&
                 JSON.parse(localStorage.getItem("volt:setup-done") || "{}").done === false;
               // the wizard itself: open → step 0, walk to step 2 with a
               // configured model, finish → summary + flag, Start reading closes
@@ -3793,8 +3823,10 @@ function runSmokeTest(w) {
             else localStorage.removeItem("volt:theme");
             if (setupPrevSetup !== null) localStorage.setItem("volt:setup-done", setupPrevSetup);
             else localStorage.removeItem("volt:setup-done");
-            setup.allOk = setup.bannerSuppressed === true && setup.bannerShows === true &&
-              setup.bannerLater === true && setup.opens === true && setup.step2 === true &&
+            setup.allOk = setup.noBannerPopup === true && setup.hintPresent === true &&
+              setup.hintSuppressed === true && setup.hintShows === true &&
+              setup.hintOpensHelp === true && setup.hintReplaysStopped === true &&
+              setup.opens === true && setup.step2 === true &&
               setup.desktopOption === true && setup.aiShowsModel === true &&
               setup.summary === true && setup.flagDone === true &&
               setup.closes === true && setup.menuReopens === true && !setup.error;
@@ -6477,11 +6509,279 @@ function runSmokeTest(w) {
               ocr.fpShape === true && ocr.fpStable === true &&
               ocr.fpRenamedMatches === true && ocr.fpDoctoredRejected === true &&
               ocr.restored === true && !ocr.error;
+            // ── ISO PDF/A-1b (ISO 19005-1) export round-trip: build a fresh
+            // doc, convert through Volt.ISO.toPdfA1b, and assert every
+            // required element lands in the file (XMP pdfaid pair, /Metadata
+            // stream, /OutputIntents + /GTS_PDFA1 + ICC profile, trailer /ID,
+            // classic xref, no /Encrypt) AND the content still opens with
+            // pdf.js and keeps its text.
+            const isoProbe = { error: null };
+            try {
+              const app2 = window.Volt.App;
+              const isoPdf = await window.PDFLib.PDFDocument.create();
+              const isoF = await isoPdf.embedFont(window.PDFLib.StandardFonts.Helvetica);
+              isoPdf.addPage([360, 280]).drawText("ISO_STANDARD_LINE_77", { x: 40, y: 200, size: 14, font: isoF });
+              const isoSrc = await isoPdf.save({ useObjectStreams: false });
+              const isoSavedBytes = app2.currentDocBytes;
+              app2.currentDocBytes = isoSrc;
+              const isoOut = await window.Volt.ISO.toPdfA1b(isoSrc, { title: "Smoke ISO", producer: "Volt Smoke" });
+              app2.currentDocBytes = isoSavedBytes;
+              isoProbe.built = isoOut && isoOut.byteLength > 2000;
+              const isoStr = String.fromCharCode.apply(null, Array.from(new Uint8Array(isoOut).slice(0, Math.min(isoOut.byteLength, 400000))));
+              isoProbe.metadataStream = isoStr.includes("/Type /Metadata") || isoStr.includes("/Type/Metadata");
+              isoProbe.pdfaidXmp = isoStr.includes("pdfaid:part") && isoStr.includes("pdfaid:conformance");
+              isoProbe.outputIntents = isoStr.includes("/OutputIntents");
+              isoProbe.gtsPdfa1 = isoStr.includes("/GTS_PDFA1");
+              isoProbe.iccProfile = isoStr.includes("/DestOutputProfile");
+              isoProbe.trailerId = /\\/ID\\s*\\[<[0-9a-f]{32}>/.test(isoStr);
+              isoProbe.classicXref = !isoStr.includes("/ObjStm");
+              isoProbe.notEncrypted = !isoStr.includes("/Encrypt");
+              const isoDoc = await pdfjsLib.getDocument({ data: new Uint8Array(isoOut) }).promise;
+              const isoPage = await isoDoc.getPage(1);
+              const isoTxt = (await isoPage.getTextContent()).items.map((it) => it.str).join(" ");
+              isoProbe.opensAndKeepsText = isoDoc.numPages >= 1 && /ISO_STANDARD_LINE_77/.test(isoTxt);
+              const isoMeta = await isoDoc.getMetadata();
+              isoProbe.pdfjsReadsPart = !!(isoMeta && isoMeta.metadata && String(isoMeta.metadata.get("pdfaid:part")) === "1");
+            } catch (e) { isoProbe.error = String((e && e.message) || e); }
+            isoProbe.allOk = isoProbe.built === true && isoProbe.metadataStream === true &&
+              isoProbe.pdfaidXmp === true && isoProbe.outputIntents === true &&
+              isoProbe.gtsPdfa1 === true && isoProbe.iccProfile === true &&
+              isoProbe.trailerId === true && isoProbe.classicXref === true &&
+              isoProbe.notEncrypted === true && isoProbe.opensAndKeepsText === true &&
+              isoProbe.pdfjsReadsPart === true && !isoProbe.error;
+            // ── e-sign (Export ▸ Digitally sign PDF…) round-trip: sign a
+            // fresh doc with the LOCAL dev certificate via Volt.Sign.signPdf,
+            // then re-verify cryptographically IN the renderer — the /Sig
+            // field + /ByteRange are present, the CMS parses, and Web Crypto
+            // re-checks BOTH the RSA signature (over the signed attributes,
+            // with the leaf cert's SPKI) and the messageDigest attribute
+            // against the /ByteRange digest. pdf.js must still open the
+            // signed file and keep its text. Soft-skips (skipped: true) when
+            // the dev cert isn't present — CI and the PWA smoke have no PFX.
+            const signProbe = { error: null, skipped: !(SIGN_PFX_PATH && window.voltDesktop && window.voltDesktop.readPfx) };
+            try {
+              if (!signProbe.skipped) {
+                const app3 = window.Volt.App;
+                const sPdf = await window.PDFLib.PDFDocument.create();
+                const sF = await sPdf.embedFont(window.PDFLib.StandardFonts.Helvetica);
+                sPdf.addPage([360, 280]).drawText("SIGN_PROBE_LINE_41", { x: 40, y: 200, size: 14, font: sF });
+                const sSrc = await sPdf.save({ useObjectStreams: false });
+                const sSavedBytes = app3.currentDocBytes;
+                app3.currentDocBytes = sSrc;
+                const r = await window.voltDesktop.readPfx(SIGN_PFX_PATH);
+                const sPfx = new Uint8Array(r.data);
+                const sSigned = await window.Volt.Sign.signPdf(sSrc, {
+                  pfxBytes: sPfx, password: SIGN_PFX_PASS, page: 1, reason: "Smoke signature",
+                });
+                app3.currentDocBytes = sSavedBytes;
+                signProbe.built = !!sSigned && sSigned.byteLength > sSrc.byteLength;
+                const sStr = String.fromCharCode.apply(null, Array.from(new Uint8Array(sSigned).slice(0, Math.min(sSigned.byteLength, 400000))));
+                signProbe.ppklite = sStr.includes("/Adobe.PPKLite");
+                signProbe.detached = sStr.includes("/adbe.pkcs7.detached");
+                signProbe.sigField = sStr.includes("/Subtype /Widget") && sStr.includes("/FT /Sig");
+                signProbe.byteRange = /\\/ByteRange \\[0 \\d{10} \\d{10} \\d{10}\\]/.test(sStr);
+                // crypto re-verify — renderer-safe (Web Crypto only)
+                const br2 = /\\/ByteRange \\[(\\d+) (\\d+) (\\d+) (\\d+)\\]/.exec(sStr);
+                const ct2 = /\\/Contents <([0-9a-fA-F]+)>/.exec(sStr);
+                if (!br2 || !ct2) {
+                  signProbe.verify = false;
+                } else {
+                  const s1 = Number(br2[1]), l1 = Number(br2[2]), s2 = Number(br2[3]), l2 = Number(br2[4]);
+                  const walk = (buf, off = 0) => {
+                    const tag = buf[off];
+                    let len = buf[off + 1], o = off + 2;
+                    if (len & 0x80) { const n = len & 0x7f; len = 0; for (let i = 0; i < n; i++) len = (len << 8) | buf[o++]; }
+                    return { tag, len, content: buf.subarray(o, o + len), next: o + len };
+                  };
+                  const kidsOf = (u8) => { const out = []; let p = 0; while (p < u8.length) { const k = walk(u8.subarray(p), 0); out.push(k); p += k.next; } return out; };
+                  const cmsBuf = new Uint8Array(ct2[1].match(/../g).map((h) => parseInt(h, 16)));
+                  const ci = walk(cmsBuf);
+                  const sd = kidsOf(ci.content).find((k) => k.tag === 0xa0);
+                  const sdKids = kidsOf(walk(sd.content, 0).content);
+                  const certBlock = sdKids.find((k) => k.tag === 0xa0);
+                  const signerInfos = sdKids.filter((k) => k.tag === 0x31).pop();
+                  const certSet = kidsOf(certBlock.content).find(() => true);
+                  const leaf = kidsOf(certSet.content).find(() => true);
+                  const leafDer = certSet.content.subarray(0, leaf.next);
+                  const spki = window.Volt.Sign._x509Parse(leafDer).spkiRaw;
+                  const si = kidsOf(signerInfos.content).find((k) => k.tag === 0x30);
+                  const siKids = kidsOf(si.content);
+                  const signedAttrs = siKids.find((k) => k.tag === 0xa0);
+                  const signature = siKids.find((k) => k.tag === 0x04);
+                  const part1 = sSigned.subarray(s1, s1 + l1);
+                  const part2 = sSigned.subarray(s2, s2 + l2);
+                  const joined = new Uint8Array(part1.length + part2.length);
+                  joined.set(part1, 0); joined.set(part2, part1.length);
+                  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", joined));
+                  const vk = await crypto.subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+                  signProbe.verify = await crypto.subtle.verify(
+                    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, vk, signature.content, signedAttrs.content);
+                  let mdOk = false;
+                  const attrSet = kidsOf(signedAttrs.content).find(() => true);
+                  for (const attr of kidsOf(attrSet.content)) {
+                    for (const part of kidsOf(attr.content)) {
+                      const values = part.tag === 0x31 ? kidsOf(part.content) : [part];
+                      for (const inner of values) {
+                        if (inner.tag === 0x04 && inner.len === 32) {
+                          let same = inner.content.length === digest.length;
+                          for (let i = 0; same && i < digest.length; i++) same = inner.content[i] === digest[i];
+                          if (same) mdOk = true;
+                        }
+                      }
+                    }
+                  }
+                  signProbe.messageDigest = mdOk;
+                  const sDoc = await pdfjsLib.getDocument({ data: sSigned }).promise;
+                  const sPage = await sDoc.getPage(1);
+                  const sTxt = (await sPage.getTextContent()).items.map((it) => it.str).join(" ");
+                  signProbe.opensKeepsText = sDoc.numPages >= 1 && /SIGN_PROBE_LINE_41/.test(sTxt);
+                }
+              }
+            } catch (e) { signProbe.error = String((e && (e.stack || e.message)) || e); }
+            signProbe.allOk = signProbe.skipped === true || (signProbe.built === true &&
+              signProbe.ppklite === true && signProbe.detached === true && signProbe.sigField === true &&
+              signProbe.byteRange === true && signProbe.verify === true && signProbe.messageDigest === true &&
+              signProbe.opensKeepsText === true && !signProbe.error);
+            // ── page mode (View ▾ → Continuous scroll / One page / Two pages) ──
+            // spread pairs pages side by side ((1,2), (3,4), …): the layout
+            // geometry puts both pages of a row on the same top, the rendered
+            // wraps land on the same flex line with a 30px gutter, and the
+            // spread menu item gets the checked state. One page snaps the
+            // scroll to page boundaries (a wheel-style scroll rests on the
+            // nearest page top). Continuous restores the free column. Modes
+            // persist under volt:view-mode; the probe restores the prior mode.
+            const spreadProbe = { error: null };
+            try {
+              const app4 = window.Volt.App;
+              const pagesEl = document.getElementById("pages");
+              const scroller = document.getElementById("scroller");
+              const prevMode = app4.viewMode;
+              const prevStored = localStorage.getItem("volt:view-mode");
+              const set = (m) => app4.setViewMode(m);
+              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+              // ── spread: pairs on one line with a 30px gutter ──
+              set("spread");
+              spreadProbe.classOn = pagesEl.classList.contains("pages-spread");
+              const pl = app4.pageLayout;
+              spreadProbe.rows = pl.length >= 3 && pl[0].top === pl[1].top &&
+                pl[2].top === pl[0].top + Math.max(pl[0].height, pl[1].height) + 30;
+              spreadProbe.persisted = localStorage.getItem("volt:view-mode") === "spread";
+              const tSpr = Date.now();
+              while (Date.now() - tSpr < 5000 && document.querySelectorAll(".page-wrap").length < 2) {
+                await sleep(100);
+              }
+              const wraps = [...document.querySelectorAll(".page-wrap")]
+                .sort((a, b) => Number(a.dataset.page) - Number(b.dataset.page));
+              spreadProbe.rendered = wraps.length >= 2;
+              if (wraps.length >= 2) {
+                const r1 = wraps[0].getBoundingClientRect();
+                const r2 = wraps[1].getBoundingClientRect();
+                spreadProbe.sameLine = Math.abs(r1.top - r2.top) < 2 && r2.left > r1.left;
+                spreadProbe.sideBySide = r2.left - (r1.left + r1.width) >= 20 &&
+                  r2.left - (r1.left + r1.width) <= 40;
+              }
+              spreadProbe.btnSpread = document.getElementById("btn-mode-spread").classList.contains("checked") &&
+                !document.getElementById("btn-mode-continuous").classList.contains("checked") &&
+                !document.getElementById("btn-mode-one").classList.contains("checked");
+              // page 3 must sit on its OWN line (a row of two, not all pages
+              // in one row — the max-content/flex-wrap trap that used to lay
+              // the whole sample out side by side)
+              const w3w = document.querySelector('.page-wrap[data-page="3"]');
+              spreadProbe.wrapRows = !!w3w && w3w.getBoundingClientRect().top > wraps[0].getBoundingClientRect().top + 20;
+              // ── one page: a mid-scroll rests on the nearest page boundary ──
+              set("one");
+              spreadProbe.oneChecked = document.getElementById("btn-mode-one").classList.contains("checked") &&
+                !document.getElementById("btn-mode-continuous").classList.contains("checked") &&
+                !document.getElementById("btn-mode-spread").classList.contains("checked");
+              spreadProbe.onePersisted = localStorage.getItem("volt:view-mode") === "one";
+              // the mode switch itself snaps (land on a boundary) — let that
+              // tween finish before we drive the scroll, so the assertion
+              // tests the settle-snap, not a race with the entry snap
+              const tEntry = Date.now();
+              while (Date.now() - tEntry < 2500 && app4._snapAnimating) await sleep(60);
+              let lastTop = -1, stableMs = 0;
+              const tStab = Date.now();
+              while (Date.now() - tStab < 2500 && stableMs < 300) {
+                await sleep(60);
+                if (scroller.scrollTop === lastTop) stableMs += 60;
+                else { stableMs = 0; lastTop = scroller.scrollTop; }
+              }
+              const p2 = app4.pageLayout[1];
+              scroller.scrollTop = p2.top - 120; // just above page 2 — must snap DOWN to its top
+              const tSnap = Date.now();
+              while (Date.now() - tSnap < 3000 && Math.abs(scroller.scrollTop - p2.top) > 5) {
+                await sleep(60);
+              }
+              spreadProbe.snapsToPage = Math.abs(scroller.scrollTop - p2.top) <= 5;
+              // ── book flip (Two pages): turning the spread like a book ──
+              // a flip plays the turn animation (out → jump → in), lands on
+              // the NEXT pair (3 pages here: 1–2 → 3), edge clicks in the
+              // left/right margins turn back and forth, and ← / → do the
+              // same from the keyboard. Classes always clear when it ends.
+              set("spread");
+              // settle the re-render before driving the flip: pages render
+              // async, and a stale Ctrl+wheel anchor used to yank the view
+              // (now cleared on the mode switch) — poll until scrollTop rests
+              // at page 1's top
+              const tSettle = Date.now();
+              while (Date.now() - tSettle < 3000) {
+                app4.goToPage(1, false);
+                await sleep(120);
+                if (scroller.scrollTop <= 20) break;
+              }
+              // a flip plays the turn animation (out → jump → in) and lands on
+              // the NEXT pair (1–2 → 3 in this 3-page sample)
+              app4._flipSpread(1);
+              spreadProbe.flipOutOn = pagesEl.classList.contains("book-flip-out");
+              await sleep(300);
+              spreadProbe.flipInOn = pagesEl.classList.contains("book-flip-in");
+              await sleep(400);
+              spreadProbe.flipMoved = app4._currentPageNum() === 3 &&
+                Math.abs(scroller.scrollTop - app4.pageLayout[2].top) < 5;
+              await sleep(350);
+              spreadProbe.flipDone = !pagesEl.classList.contains("book-flip-out") &&
+                !pagesEl.classList.contains("book-flip-in") && !app4._flipping;
+              const pr = pagesEl.getBoundingClientRect();
+              pagesEl.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: pr.left + 20, clientY: pr.top + 120 }));
+              await sleep(650);
+              spreadProbe.edgeFlipBack = app4._currentPageNum() === 1;
+              pagesEl.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: pr.right - 20, clientY: pr.top + 120 }));
+              await sleep(650);
+              spreadProbe.edgeFlip = app4._currentPageNum() === 3;
+              document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+              await sleep(650);
+              spreadProbe.keyFlipBack = app4._currentPageNum() === 1;
+              // ── continuous: free column, no spread class ──
+              set("continuous");
+              spreadProbe.classOff = !pagesEl.classList.contains("pages-spread");
+              const pl2 = app4.pageLayout;
+              spreadProbe.column = pl2.length >= 3 && pl2[1].top > pl2[0].top && pl2[2].top > pl2[1].top;
+              spreadProbe.persistedBack = localStorage.getItem("volt:view-mode") === "continuous";
+              spreadProbe.btnContinuous = document.getElementById("btn-mode-continuous").classList.contains("checked") &&
+                !document.getElementById("btn-mode-one").classList.contains("checked") &&
+                !document.getElementById("btn-mode-spread").classList.contains("checked");
+              if (prevMode === "spread" || prevMode === "one" || prevMode === "continuous") set(prevMode);
+              if (prevStored === null) localStorage.removeItem("volt:view-mode");
+            } catch (e) { spreadProbe.error = String((e && (e.stack || e.message)) || e); }
+            spreadProbe.allOk = spreadProbe.classOn === true && spreadProbe.rows === true &&
+              spreadProbe.persisted === true && spreadProbe.rendered === true &&
+              spreadProbe.sameLine === true && spreadProbe.sideBySide === true &&
+              spreadProbe.btnSpread === true && spreadProbe.wrapRows === true &&
+              spreadProbe.oneChecked === true &&
+              spreadProbe.onePersisted === true && spreadProbe.snapsToPage === true &&
+              spreadProbe.flipOutOn === true && spreadProbe.flipMoved === true &&
+              spreadProbe.flipInOn === true && spreadProbe.flipDone === true &&
+              spreadProbe.edgeFlipBack === true && spreadProbe.edgeFlip === true &&
+              spreadProbe.keyFlipBack === true &&
+              spreadProbe.classOff === true && spreadProbe.column === true &&
+              spreadProbe.persistedBack === true && spreadProbe.btnContinuous === true &&
+              !spreadProbe.error;
             return {
-              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && aboutModal.allOk && ocr.allOk && office.allOk,
+              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && aboutModal.allOk && ocr.allOk && office.allOk && isoProbe.allOk && signProbe.allOk && spreadProbe.allOk,
               voice,
               bootstrap: boot,
               ocr,
+              spreadProbe,
               hiddenProbe,
               visibleProbe,
               vendorBootErrors,
@@ -6503,6 +6803,8 @@ function runSmokeTest(w) {
               indexHtmlCache: htmlCache,
               versionBanner: verBanner,
               aboutModal,
+              isoProbe,
+              signProbe,
               renderedPages: wraps,
               textSpans,
               doc: document.getElementById("sb-file").textContent,
@@ -6535,7 +6837,11 @@ function runSmokeTest(w) {
           renderedKeys: [...window.Volt.App.rendered.keys()],
           stages: out,
         };
-      })()`);
+      })().catch((e) => ({ ok: false, probeError: String((e && e.stack) || e) }));`);
+      } catch (e) {
+        console.log("PROBE-EXEC-ERROR " + ((e && e.stack) || e));
+        result = { ok: false, probeError: String((e && e.stack) || e) };
+      }
       // the renderer is done with the watch temp file — stop the touch poller
       // and reclaim the temp dir now
       if (watchReadyPoller) { clearInterval(watchReadyPoller); watchReadyPoller = null; }
@@ -6903,6 +7209,26 @@ if (!gotLock) {
         });
         return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
       });
+      // volt:pick-pfx — the e-sign flow's certificate picker (Export ▸
+      // Digitally sign PDF…). Same native dialog, scoped to PKCS#12 files.
+      // Returns null when cancelled.
+      ipcMain.handle("volt:pick-pfx", async () => {
+        if (!win || win.isDestroyed()) return null;
+        const r = await dialog.showOpenDialog(win, {
+          title: "Choose a signing certificate (PKCS#12)",
+          filters: [{ name: "Certificates (PKCS#12)", extensions: ["pfx", "p12"] }],
+          properties: ["openFile"],
+        });
+        return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
+      });
+      // volt:read-pfx — reads a PKCS#12 signing certificate into the
+      // renderer. The .pdf-only guard on volt:read-file would reject it, and
+      // a separate .pfx/.p12-scoped handler keeps the surface narrow.
+      ipcMain.handle("volt:read-pfx", async (_event, path) => {
+        if (typeof path !== "string" || !/\.(pfx|p12)$/i.test(path)) throw new Error("not a pfx");
+        const data = await readFile(path);
+        return { name: basename(path), size: data.byteLength, data: new Uint8Array(data).buffer };
+      });
       // volt:setup-tasks — the Setup wizard's desktop step: create the
       // desktop shortcut + register .pdf → Volt. Packaged installs already
       // handled both, so that path just reports skipped; dev/portable runs
@@ -7132,6 +7458,15 @@ if (!gotLock) {
         isPackaged: app.isPackaged,
         updaterEnabled,
       }));
+      // volt:open-url — the Send-feedback flow opens the GitHub issue page
+      // (prefilled title/body) in the DEFAULT BROWSER via shell.openExternal.
+      // Strictly http/https so a compromised renderer can't hand the shell an
+      // arbitrary protocol handler.
+      ipcMain.handle("volt:open-url", async (_event, url) => {
+        if (typeof url !== "string" || !/^https?:\/\//i.test(url)) throw new Error("bad url");
+        await shell.openExternal(url);
+        return { ok: true };
+      });
       // volt:quit — the Volt ▾ menu's Exit item (desktop only; the item is
       // hidden in the browser where there is nothing to quit)
       ipcMain.handle("volt:quit", () => {

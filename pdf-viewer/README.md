@@ -79,21 +79,25 @@ annotating, and AI chat with zero setup. Recents are per-user
 (`volt:recent-docs`, capped at 8, deduped, most-recent-first) and only
 record documents with a reopenable source.
 
-### First-run setup wizard
-On a fresh profile (nothing saved under `volt:setup-done`), Volt shows a
-small **Finish setup** banner above the toolbar. It opens the **Setup
-wizard** — four steps: *Welcome → Desktop & appearance → AI → You're set*.
-The desktop step offers the **desktop shortcut + .pdf association** (one
+### First-run hint
+Opening Volt never greets you with a popup to dismiss — you can start
+reading immediately. On a fresh profile (nothing saved under
+`volt:setup-done`) a small pill quietly appears in the blank toolbar area:
+**← Click here to get started or for help**. It fades in, holds, then
+slides away behind the **Volt ▾** menu on its own — no buttons, nothing to
+dismiss — and clicking it opens **Help & guides**. Engaging with it (or
+finishing the wizard) marks setup as answered so the hint doesn't replay.
+
+The **Setup wizard** (four steps: *Welcome → Desktop & appearance → AI →
+You're set*) stays reachable anytime from **Volt ▾ → Setup wizard…**. The
+desktop step offers the **desktop shortcut + .pdf association** (one
 checkbox; in the desktop app it runs the same PowerShell script the
 launcher uses, and a packaged installer reports it as already handled) and
 the **skin** (dark/light, applied immediately). The AI step detects Ollama
-and shows which model Volt will use. **Finish** applies everything, shows
-a summary (desktop / skin / AI lines), and marks setup as done so the
-banner never nags again. **Skip** and **Not now** both answer the banner
-without running anything, and the wizard stays reachable anytime from
-**Volt ▾ → Setup wizard…**. In the browser/PWA the desktop checkbox is
-replaced by a note explaining that shortcuts and file association belong
-to the desktop app.
+and shows which model Volt will use. **Finish** applies everything and
+shows a summary (desktop / skin / AI lines). In the browser/PWA the
+desktop checkbox is replaced by a note explaining that shortcuts and file
+association belong to the desktop app.
 
 ## Connecting a local LLM (Ollama)
 
@@ -274,13 +278,30 @@ Pick the preset, paste your API key (stored only in your browser's
   ("Selected text across N pages — M chars" with the **Highlight all** and
   **Copy w/ citations** actions), so the multi-page highlight conversion
   and its single-undo revert work from the keyboard selection too.
+- **Bookmarks** — mark pages to jump back to. The toolbar's bookmark button
+  (or `Ctrl+Shift+B`) opens the sidebar's **Bookmarks** tab: **＋ Bookmark
+  this page** drops a jump mark on the page you're reading (a small ribbon
+  appears in that page's top-right corner), and every bookmark shows as a
+  card with its page number and an optional label you can **rename**
+  inline or **remove** with one click. The **Find bookmarks** box filters
+  the list live by label or page number, clicking a card jumps straight to
+  the page, and **Clear all** wipes the document's set after a confirm.
+  Bookmarks follow their document through renames and re-exports (same
+  `volt:bm:` identity scheme as annotations) and survive the **pages
+  manager**: delete or reorder pages and bookmarks renumber with them,
+  dropping only if their page is deleted.
 - **A tidy toolbar** — secondary actions are grouped under three dropdowns:
   **Volt** (the logo button — Open PDF…, Open from URL…, Export / backup…, AI
   settings, App settings, Help &amp; guides…, Check for updates, About Volt…,
-  Save PDF, Exit), **Markup** (the six annotate tools — Select, Highlight,
-  Underline, Strikethrough, Square, Note — plus **Signature…**, **Date
+  Save PDF, Exit),  **Markup** (the annotate tools — Select, Highlight, Rectangle, Redact,
+  Underline, Strikethrough, Note, Text — plus **Signature…**, **Date
   stamp**, and **Form field…**), **View** (Fit width, Fit page, Rotate
-  clockwise, Light skin, Dark skin), and **Tools** (OCR this document, OCR
+  clockwise, **Continuous scroll / One page / Two pages** — page modes,
+  remembered per user: free scrolling column, one page per scroll (scrolling
+  rests on page boundaries), or a book spread with pages side by side in
+  pairs — and in Two pages, ← / →, PageUp/PageDown or clicks on the left /
+  right margin **flip the spread like a book** with a page-turn animation —
+  Light skin, Dark skin), and **Tools** (OCR this document, OCR
   language, OCR text layer, Read aloud). **OCR language** opens its own small popover —
   searchable (native name, English name, or code — e.g. “french” finds
   Français), with a per-language availability status (**Built in** for
@@ -576,10 +597,34 @@ Pick the preset, paste your API key (stored only in your browser's
   Rebuilds go through pdf-lib `copyPages`, so inserted pages keep their vector
   quality (no re-rasterization).
 - **Exporting** — an **annotated PDF** (highlights/underlines/strikes/notes
-  burned in via pdf-lib), a **Markdown** notes file, a **Chat transcript**
-  (Markdown — question/answer pairs with page citations, for sharing the
-  conversation outside Volt), a portable **JSON backup** (export +
-  re-import anywhere), or **Word / Excel / LibreOffice documents**: the
+  burned in via pdf-lib), a **Secure PDF…** (password-protect the exported
+  file and restrict copying / printing / modifying — the PDF standard
+  security handler, verified by the smoke through pdf.js), a
+  **Send feedback…** (the Volt ▾ menu drafts a GitHub issue on the public
+  repository with your message and an attached environment block — version,
+  engine, OS, open document — so maintainers can reproduce it; it opens in
+  the default browser for you to review and submit; the app never sends
+  anything itself), and
+  **Digitally sign PDF…** (attach a real certificate signature to the
+  annotated export — an AcroForm `/Sig` field with a `/ByteRange` and a
+  detached PKCS#7 (CMS) SignedData that Acrobat, pdf.js and independent
+  verifiers validate; the certificate comes from a local PKCS#12
+  `.pfx`/`.p12` file picked through the native dialog, everything runs
+  in-process via Web Crypto and nothing leaves the machine — including
+  pure-JS TripleDES for Windows-exported PFXes, verified against Node's
+  crypto in the unit tests), a
+  **PDF/A-1b (ISO 19005-1)** archival export (the ISO PDF/A standard: XMP
+  metadata carrying the `pdfaid` part/conformance pair, an uncompressed
+  `/Metadata` stream, an OutputIntent with an embedded sRGB ICC v2
+  profile, document info, a trailer file identifier, embedded fonts and a
+  classic xref — built on pure unit-tested helpers and asserted in the
+  exported bytes by the smoke; the one thing a strict validator may still
+  flag is semi-transparent annotation overlays, so run veraPDF or similar
+  before shipping an audit file), a **Markdown** notes file, a **Chat
+  transcript** (Markdown — question/answer pairs with page citations, for
+  sharing the conversation outside Volt), a portable **JSON backup**
+  (export + re-import anywhere), or **Word / Excel / LibreOffice
+  documents**: the
   export dialog also offers **.docx** (a real OOXML Word document — title,
   paragraphs, tables and images, each table rendered as a Word table),
   **.xlsx** (a real spreadsheet — every detected table becomes its own
@@ -827,6 +872,7 @@ Manage it manually from the project root:
 | Open PDF | `Ctrl+O` |
 | Search | `Ctrl+F` · next/prev `Enter`/`Shift+Enter` |
 | Sidebar / AI panel | `Ctrl+B` / `Ctrl+J` |
+| Bookmarks (add / edit / remove / find) | `Ctrl+Shift+B` — toolbar button or the sidebar's Bookmarks tab |
 | Manage pages | `Ctrl+Shift+P` |
 | Extend selection (pages manager · sidebar thumbs) | `Shift+↑/↓` one page · `Shift+Home/End` to the boundary |
 | Open File / View / Tools menu | `Alt+F` / `Alt+V` / `Alt+T` |

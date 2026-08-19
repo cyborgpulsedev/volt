@@ -175,6 +175,79 @@ t("remap: non-array input → []", U.remapAnnotations(null, { 1: 1 }).length ===
 
 t("remap: original list untouched", anns.length === 4 && anns[1].page === 2);
 
+const bms = [
+  { id: "x", page: 1, label: "Intro" },
+  { id: "y", page: 3, label: "Figures" },
+  { id: "z", page: 5, label: "References" },
+];
+// delete page 3, renumber 5→3 → x:1, z:3 (label kept)
+t("bm-remap: deletes + renumbers", JSON.stringify(U.remapBookmarks(bms, { 1: 1, 5: 3 }).map((x) => x.id + ":" + x.page)) === JSON.stringify(["x:1", "z:3"]));
+t("bm-remap: keeps bookmark payload", (() => { const r = U.remapBookmarks(bms, { 1: 2 }); return r.length === 1 && r[0].id === "x" && r[0].label === "Intro" && r[0].page === 2; })());
+t("bm-remap: empty map drops everything", U.remapBookmarks(bms, {}).length === 0);
+t("bm-remap: non-array input → []", U.remapBookmarks(null, { 1: 1 }).length === 0);
+t("bm-remap: original list untouched", bms.length === 3 && bms[1].page === 3);
+
+// ── PDF security + redaction (md5 / rc4 / security keys / content redact) ──
+const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
+t("md5: RFC 1321 vector (empty)", hex(U.md5(new Uint8Array(0))) === "d41d8cd98f00b204e9800998ecf8427e");
+t("md5: RFC 1321 vector (abc)", hex(U.md5(new TextEncoder().encode("abc"))) === "900150983cd24fb0d6963f7d28e17f72");
+t("md5: vector (message digest)", hex(U.md5(new TextEncoder().encode("message digest"))) === "f96b697d7cb7938d525a2f31aaf161d0");
+t("rc4: 3-byte key vector", hex(U.rc4(new TextEncoder().encode("Key"), new TextEncoder().encode("Plaintext"))).toUpperCase() === "BBF316E8D940AF0AD3");
+t("rc4: round-trips", (() => {
+  const msg = new TextEncoder().encode("Volt redaction test");
+  const enc = U.rc4(new Uint8Array([1, 2, 3, 4, 5]), msg);
+  const dec = U.rc4(new Uint8Array([1, 2, 3, 4, 5]), enc);
+  return hex(dec) === hex(msg);
+})());
+
+t("sec-keys: shape (O/U 32B, key 5B, P integer)", (() => {
+  const k = U.pdfSecurityKeys("open", "owner", { printing: true, copying: false }, new Uint8Array(16).fill(7));
+  return k.O.length === 32 && k.U.length === 32 && k.key.length === 5 && Number.isInteger(k.P);
+})());
+t("sec-keys: copying denied clears bit 5 (value 16)", (() => {
+  const deny = U.pdfSecurityKeys("u", "o", { printing: true, modifying: true, copying: false, annotations: true }, new Uint8Array(16));
+  const allow = U.pdfSecurityKeys("u", "o", { printing: true, modifying: true, copying: true, annotations: true }, new Uint8Array(16));
+  return (deny.P & 16) === 0 && (allow.P & 16) === 16;
+})());
+t("sec-keys: deterministic for same inputs", (() => {
+  const a = U.pdfSecurityKeys("pw", "ow", { copying: false }, new Uint8Array(16).fill(3));
+  const b = U.pdfSecurityKeys("pw", "ow", { copying: false }, new Uint8Array(16).fill(3));
+  return hex(a.O) === hex(b.O) && hex(a.U) === hex(b.U) && hex(a.key) === hex(b.key);
+})());
+
+// content-stream redaction: a stream with two text lines, one inside a rect
+const redactStream = [
+  "BT /F1 12 Tf 72 700 Td (CONFIDENTIAL) Tj 0 -16 Td (public note) Tj ET",
+  "\nBT /F1 10 Tf 100 100 Td (keep me) Tj ET",
+].join("");
+// rect covers the FIRST line's glyph box (baseline 700, box ≈696–710)
+t("redact: drops Tj whose baseline is inside the rect", !U.pdfRedactContent(redactStream, [{ x: 60, y: 696, w: 240, h: 15 }]).includes("CONFIDENTIAL"));
+t("redact: keeps text outside the rect", (() => {
+  const out = U.pdfRedactContent(redactStream, [{ x: 60, y: 696, w: 240, h: 15 }]);
+  return out.includes("public note") && out.includes("keep me");
+})());
+t("redact: no rects → unchanged", U.pdfRedactContent(redactStream, []) === redactStream);
+t("redact: Tj before BT is untouched", (() => {
+  const s = "0 0 m (not text) Tj BT /F1 12 Tf 72 700 Td (SECRET) Tj ET";
+  const out = U.pdfRedactContent(s, [{ x: 60, y: 696, w: 240, h: 15 }]);
+  return out.includes("(not text) Tj") && !out.includes("SECRET");
+})());
+t("redact: TJ array inside the rect is dropped", (() => {
+  const s = "BT /F1 12 Tf 72 700 Td [(TOP) 2 (SECRET)] TJ ET";
+  return !U.pdfRedactContent(s, [{ x: 60, y: 696, w: 240, h: 15 }]).includes("TJ");
+})());
+t("redact: line moved by Td stays tracked", (() => {
+  const s = "BT /F1 12 Tf 72 700 Td (line one) Tj 0 -16 Td (line two) Tj ET";
+  // rect covering ONLY the second line (baseline 684, box ≈680–694)
+  const out = U.pdfRedactContent(s, [{ x: 60, y: 680, w: 240, h: 15 }]);
+  return out.includes("line one") && !out.includes("line two");
+})());
+t("redact: stream stays balanced (no dangling operands)", (() => {
+  const s = "BT /F1 12 Tf 72 700 Td (SECRET A) Tj (SECRET B) Tj ET";
+  const out = U.pdfRedactContent(s, [{ x: 0, y: 0, w: 800, h: 800 }]);
+  return !out.includes("SECRET") && !out.includes("Tj") && !/\([^)]*\)/.test(out.replace(/\/F1|12|72|700|Td|BT|ET/g, " "));
+})());
+
 // ── window-state persistence (scripts/window-state.cjs) ──
 // the pure validation behind main.js's "remember window size/position": the
 // saved bounds must survive a relaunch but never restore a window that is
@@ -363,6 +436,66 @@ t("pageSizeLabel: missing dims → empty", U.pageSizeLabel(0, 792) === "" && U.p
 t("trunc: short passes through", U.trunc("short", 10) === "short");
 t("trunc: long gets ellipsis", U.trunc("abcdefghij", 5) === "abcde…");
 t("trunc: trims trailing whitespace before the ellipsis", U.trunc("ab cd  ", 3) === "ab…");
+
+// ── ISO PDF standards (PDF/A-1b) ──
+t("buildSrgbIcc: header size field matches actual length", (() => {
+  const icc = U.buildSrgbIcc();
+  const size = (icc[0] << 24) | (icc[1] << 16) | (icc[2] << 8) | icc[3];
+  return size === icc.length && icc.length > 300 && icc.length < 600;
+})());
+t("buildSrgbIcc: magic + class + space + version", (() => {
+  const icc = U.buildSrgbIcc();
+  const str = (off, n) => String.fromCharCode(...icc.slice(off, off + n));
+  return str(36, 4) === "acsp" && str(12, 4) === "mntr" && str(16, 4) === "RGB " &&
+    ((icc[8] << 24) | (icc[9] << 16) | (icc[10] << 8) | icc[11]) >= 0x02100000;
+})());
+(() => {
+  const icc = U.buildSrgbIcc();
+  const count = (icc[128] << 24) | (icc[129] << 16) | (icc[130] << 8) | icc[131];
+  let ok = count === 8;
+  const sigs = new Set();
+  for (let i = 0; i < count; i++) {
+    const base = 132 + i * 12;
+    const sig = String.fromCharCode(...icc.slice(base, base + 4));
+    const off = (icc[base + 4] << 24) | (icc[base + 5] << 16) | (icc[base + 6] << 8) | icc[base + 7];
+    const len = (icc[base + 8] << 24) | (icc[base + 9] << 16) | (icc[base + 10] << 8) | icc[base + 11];
+    sigs.add(sig);
+    if (off + len > icc.length) ok = false; // every tag must fit in the file
+  }
+  return ok && ["desc", "wtpt", "rXYZ", "gXYZ", "bXYZ", "rTRC", "gTRC", "bTRC"].every((s) => sigs.has(s));
+})() ? t("buildSrgbIcc: 8 tags with all required sigs in-bounds", true) : t("buildSrgbIcc: 8 tags with all required sigs in-bounds", false);
+t("pdfA1bXmp: carries pdfaid part + conformance", (() => {
+  const x = U.pdfA1bXmp({ title: "T", producer: "P" });
+  return x.includes("<pdfaid:part>1</pdfaid:part>") && x.includes("<pdfaid:conformance>B</pdfaid:conformance>");
+})());
+t("pdfA1bXmp: escapes title/producer, omits empty fields", (() => {
+  const x = U.pdfA1bXmp({ title: "A <B> & C", producer: "" });
+  return x.includes("A &lt;B&gt; &amp; C") && !x.includes("<pdf:Producer>") &&
+    !x.includes("<xmp:CreateDate>") &&
+    !U.pdfA1bXmp({}).includes("<dc:title>");
+})());
+t("pdfA1bXmp: xpacket wrapper present, dates ISO", (() => {
+  const d = new Date("2026-08-19T10:20:30.123Z");
+  const x = U.pdfA1bXmp({ title: "T", created: d, modified: d });
+  return x.startsWith('<?xpacket begin="\uFEFF"') && x.trimEnd().endsWith('<?xpacket end="w"?>') &&
+    x.includes("<xmp:CreateDate>2026-08-19T10:20:30Z</xmp:CreateDate>");
+})());
+t("injectPdfTrailerId: inserts /ID before trailer close", (() => {
+  const src = "trailer\n<<\n/Size 7\n/Root 2 0 R\n>>\nstartxref\n1129\n%%EOF";
+  const out = U.injectPdfTrailerId(src, "a1b2c3d4e5f60718293a4b5c6d7e8f90");
+  return out.includes("/ID [<a1b2c3d4e5f60718293a4b5c6d7e8f90> <a1b2c3d4e5f60718293a4b5c6d7e8f90>]") &&
+    out.includes("/Size 7") && out.includes("startxref\n1129\n%%EOF");
+})());
+t("injectPdfTrailerId: skips when /ID already present", (() => {
+  const src = "trailer\n<< /ID [<aa> <aa>] /Size 7 >>";
+  return U.injectPdfTrailerId(src, "a1b2c3d4e5f60718293a4b5c6d7e8f90") === src;
+})());
+t("injectPdfTrailerId: RANDOM derives a 32-hex id from the source", (() => {
+  const src = "trailer\n<<\n/Size 7\n>>";
+  const out = U.injectPdfTrailerId(src, "RANDOM");
+  const m = /\/ID \[<([0-9a-f]{32})>/.exec(out);
+  return !!m;
+})());
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

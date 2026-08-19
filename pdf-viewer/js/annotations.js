@@ -15,6 +15,7 @@
     date: { color: "#334155", alpha: 1, label: "Date stamp" },
     form: { color: "#5b4fd6", alpha: 1, label: "Form field" },
     text: { color: "#111827", alpha: 1, label: "Text edit" },
+    redact: { color: "#000000", alpha: 1, label: "Redaction" },
   };
 
   const PALETTE = {
@@ -22,6 +23,9 @@
     rect: ["#a78bfa", "#67e8f9", "#fde047", "#f9a8d4"],
     underline: ["#4cc9f0", "#86efac", "#f9a8d4", "#fdba74"],
     strike: ["#f87171", "#fca5a5", "#fb7185"],
+    // redactions stay black — the recolor row offers only black so a
+    // redaction can never silently become a translucent colored bar
+    redact: ["#000000"],
   };
 
   const Volt = global.Volt = global.Volt || {};
@@ -207,7 +211,8 @@
       } else {
         tip.textContent = (TYPES[mode]?.label || mode) + (mode === "highlight" ? " — drag over text · click = rect · Shift = square · Alt = from center"
           : mode === "rect" ? " — click or drag = rectangle · Shift = square · Alt = from center"
-            : mode === "signature" ? " — click the page to place it"
+            : mode === "redact" ? " — click or drag = black bar · covered text is removed from the exported PDF"
+              : mode === "signature" ? " — click the page to place it"
               : mode === "date" ? " — click the page to stamp today's date"
                 : mode === "form" ? " — drag on the page to draw the field"
                   : mode === "text" ? " — click a line of text to edit its wording, font, size or color" : " — drag over text");
@@ -396,16 +401,18 @@
         // well, would be a text highlight — so it needs the blank check).
         if (d.mode === "rect") {
           this._placeClickRect(wrap, (x1 + x2) / 2, (y1 + y2) / 2, "rect");
+        } else if (d.mode === "redact") {
+          this._placeClickRect(wrap, (x1 + x2) / 2, (y1 + y2) / 2, "redact");
         } else if (d.mode === "highlight" && !this._hasTextBoxNear(wrap, (x1 + x2) / 2, (y1 + y2) / 2)) {
           this._placeClickRect(wrap, (x1 + x2) / 2, (y1 + y2) / 2, "highlight");
         }
         return; // too small
       }
 
-      if (d.mode === "rect") {
-        // the Rectangle tool ALWAYS draws a rectangle — over text or blank
-        // space; no text-quads fallback, no "no text" error
-        this._makeAreaRect(wrap, d.startX, d.startY, x, y, ev.shiftKey, "rect", ev.altKey);
+      if (d.mode === "rect" || d.mode === "redact") {
+        // the Rectangle / Redact tools ALWAYS draw a rectangle — over text or
+        // blank space; no text-quads fallback, no "no text" error
+        this._makeAreaRect(wrap, d.startX, d.startY, x, y, ev.shiftKey, d.mode, ev.altKey);
         return;
       }
 
@@ -837,13 +844,15 @@
         page: Number(wrap.dataset.page),
         rect: { x: rx, y: ry, w: rw, h: rh },
         text: "",
-        color: this.colors[type] || this.colors.highlight,
+        color: this.colors[type] || (TYPES[type] ? TYPES[type].color : this.colors.highlight),
         createdAt: Date.now(),
       };
       this._mutate(() => this.list.push(ann));
       this._app().toast(type === "rect"
         ? "Rectangle added — drag a handle to resize (Shift = square) · ⤾ to rotate"
-        : "No text there — created an area highlight", "ok");
+        : type === "redact"
+          ? "Redaction added — its text is removed from the exported PDF"
+          : "No text there — created an area highlight", "ok");
     },
 
     /* ── geometry helpers ───────────────────────────────────── */
@@ -1341,6 +1350,37 @@
       }
     },
 
+    /** Hide text-layer spans covered by redactions (called from app.js after
+        each text-layer render). The overlay already paints the black bar;
+        hiding the covered spans keeps them unselectable / un-copyable on
+        screen — the same guarantee the export enforces in the content
+        stream. Never throws. */
+    applyRedactionsToLayer(layer, pageNum) {
+      try {
+        const redacts = this.list.filter((a) => a.type === "redact" && a.rect && a.page === pageNum);
+        if (!redacts.length) return;
+        const wrap = layer.closest(".page-wrap");
+        if (!wrap) return;
+        const wrect = wrap.getBoundingClientRect();
+        const spans = layer.querySelectorAll("span");
+        for (const s of spans) {
+          if (!s.textContent.trim()) continue;
+          const r = s.getBoundingClientRect();
+          const cx = r.left - wrect.left + r.width / 2;
+          const cy = r.top - wrect.top + r.height / 2;
+          for (const ann of redacts) {
+            const poly = this._rectCornersLocal(wrap, ann);
+            let inside = false;
+            for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+              const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+              if ((yi > cy) !== (yj > cy) && cx < ((xj - xi) * (cy - yi)) / (yj - yi) + xi) inside = !inside;
+            }
+            if (inside) { s.style.visibility = "hidden"; break; }
+          }
+        }
+      } catch (e) { /* a redaction must never break the layer */ }
+    },
+
     _findSpanByText(spans, original) {
       const t = String(original || "").trim();
       if (!t) return null;
@@ -1817,7 +1857,7 @@
         const a = anns[i];
         // rect-based shapes (area highlights, rectangles, signatures, date
         // stamps, form fields) are all selectable/movable/resizable
-        if ((a.type === "highlight" || a.type === "rect" || a.type === "signature" || a.type === "date" || a.type === "form") && a.rect) {
+        if ((a.type === "highlight" || a.type === "rect" || a.type === "signature" || a.type === "date" || a.type === "form" || a.type === "redact") && a.rect) {
           if (a.rotation) {
             // rotated area highlight: inverse-rotate the click into the rect's
             // own (unrotated) frame around its center, then test the bounds —
@@ -2553,13 +2593,17 @@
         if (ann.type === "form") { this._drawFormField(ctx, wrap, ann); continue; }
         // area highlights from BOTH the highlight tool's blank-space fallback
         // and the dedicated Rectangle tool draw the same filled rect
-        if ((ann.type === "highlight" || ann.type === "rect") && ann.rect) {
+        if ((ann.type === "highlight" || ann.type === "rect" || ann.type === "redact") && ann.rect) {
           // area highlight (drag on blank space): fill the stored rectangle.
           // The corners go through the SAME _rectCornersPdf mapping the export
           // uses, so a rotated highlight renders exactly as it exports (and a
-          // rotated page stays correct too).
+          // rotated page stays correct too). Redactions fill near-solid black
+          // so the covered text is unreadable on screen, exactly like the
+          // exported bar.
           const pts = this._rectCornersLocal(wrap, ann);
-          ctx.fillStyle = this._hexToRgba(ann.color || "#fde047", 0.38);
+          ctx.fillStyle = ann.type === "redact"
+            ? "rgba(0, 0, 0, 0.96)"
+            : this._hexToRgba(ann.color || "#fde047", 0.38);
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
           ctx.lineTo(pts[1].x, pts[1].y);
@@ -2759,6 +2803,7 @@
           ? (ann.text || "(empty note)")
           : ann.rect
             ? (ann.type === "rect" ? "(rectangle)"
+              : ann.type === "redact" ? "(redaction)"
               : ann.type === "form" ? "(" + (ann.fieldType || "text") + " field" + (ann.name ? " — " + ann.name.replace(/^volt_field_/, "") : "") + ")"
                 : ann.type === "signature" ? "(signature)"
                   : ann.type === "date" ? (ann.text || "(date stamp)")
@@ -2789,6 +2834,7 @@
         else if (ann.rect) {
           if (ann.type === "form") md += `> _(form field: ${ann.fieldType || "text"}${ann.name ? " — " + ann.name.replace(/^volt_field_/, "") : ""})_\n`;
           else if (ann.type === "signature") md += "> _(signature)_\n";
+          else if (ann.type === "redact") md += "> _(redaction)_\n";
           else md += ann.type === "rect" ? "> _(rectangle)_\n" : "> _(area highlight)_\n";
         }
         md += "\n";
@@ -2947,6 +2993,90 @@
         }
       } else if (ann.type === "form" && ann.rect) {
         await this._burnFormField(pdf, page, ann, helv);
+      } else if (ann.type === "redact" && ann.rect) {
+        // redaction: an opaque black bar (the covered text is REMOVED from the
+        // content stream separately — see _redactPageContent)
+        if (ann.rotation) {
+          const corners = this._rectCornersPdf(ann);
+          const path = "M " + corners.map((p) => p.x + " " + p.y).join(" L ") + " Z";
+          page.drawSvgPath(path, { color: rgb(0, 0, 0), opacity: 1 });
+        } else {
+          page.drawRectangle({ x: ann.rect.x, y: ann.rect.y, width: ann.rect.w, height: ann.rect.h, color: rgb(0, 0, 0), opacity: 1 });
+        }
+      }
+    },
+
+    /** Remove text content under redaction rects from a page's content
+        streams — the burn-in half of a redaction. Redacts draw an opaque bar
+        AND must have their underlying text removed from the stream, so
+        copying/searching the exported PDF cannot recover it. Reads each
+        /Contents stream (freshly created or loaded), inflates when the
+        stream is FlateDecode, runs Utils.pdfRedactContent, then re-emits as
+        a new flate stream. Streams with any OTHER filter (ASCII85, LZW…)
+        are skipped untouched rather than risk corrupting them. */
+    async _redactPageContent(pdf, page, redacts) {
+      if (!redacts || !redacts.length) return;
+      const rects = redacts.map((a) => {
+        if (a.rotation) {
+          const cs = this._rectCornersPdf(a);
+          const xs = cs.map((p) => p.x), ys = cs.map((p) => p.y);
+          return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+        }
+        return a.rect;
+      });
+      const { PDFName, PDFArray } = global.PDFLib;
+      const node = page.node;
+      let contents = node.get(PDFName.of("Contents"));
+      if (!contents) return;
+      const isArr = contents instanceof PDFArray;
+      const streams = isArr ? [] : [contents];
+      if (isArr) for (let i = 0; i < contents.size(); i++) streams.push(contents.get(i));
+      const ctx = pdf.context;
+      const flate = PDFName.of("FlateDecode");
+      const replaced = [];
+      for (const ref of streams) {
+        try {
+          const stream = ctx.lookup(ref);
+          if (!stream || typeof stream.getContents !== "function") continue;
+          const raw = stream.getContents();
+          if (!raw || !raw.length) continue;
+          // only handle plain or pure-FlateDecode streams
+          let filter = stream.dict && stream.dict.get ? stream.dict.get(PDFName.of("Filter")) : null;
+          let isFlate = false, plain = true;
+          if (filter instanceof PDFName) { plain = false; isFlate = filter === flate; }
+          else if (filter instanceof PDFArray) {
+            plain = false;
+            if (filter.size() === 1 && filter.get(0) === flate) isFlate = true;
+          }
+          if (isFlate || (plain && raw[0] === 0x78)) isFlate = true;
+          else if (!plain) continue;
+          let decoded = raw;
+          if (isFlate) {
+            const ds = new DecompressionStream("deflate");
+            const w = ds.writable.getWriter();
+            w.write(raw); w.close();
+            decoded = new Uint8Array(await new Response(ds.readable).arrayBuffer());
+          }
+          // byte-preserving latin1 decode (chunked — huge streams blow the
+          // apply/spread arg limits)
+          let txt = "";
+          for (let i = 0; i < decoded.length; i += 0x8000) txt += String.fromCharCode.apply(null, decoded.subarray(i, i + 0x8000));
+          const out = global.Utils.pdfRedactContent(txt, rects);
+          if (out === txt) continue;
+          const bytes = new Uint8Array(out.length);
+          for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 0xff;
+          const newRef = ctx.register(ctx.flateStream(bytes));
+          replaced.push({ ref, newRef });
+        } catch (e) { /* one bad stream must not abort the export */ }
+      }
+      if (!replaced.length) return;
+      if (isArr) {
+        for (const r of replaced) {
+          const idx = streams.indexOf(r.ref);
+          if (idx >= 0) contents.set(idx, r.newRef);
+        }
+      } else {
+        node.set(PDFName.of("Contents"), replaced[0].newRef);
       }
     },
 
@@ -3024,6 +3154,8 @@
       for (const pageNum of Object.keys(byPage)) {
         const page = pdf.getPage(parseInt(pageNum, 10) - 1);
         for (const ann of byPage[pageNum]) await this._burnAnnotation(page, ann, helv, pdf);
+        const redacts = byPage[pageNum].filter((a) => a.type === "redact");
+        if (redacts.length) await this._redactPageContent(pdf, page, redacts);
       }
       return pdf.save();
     },
@@ -3071,7 +3203,10 @@
           throw new Error("Unknown plan entry: " + e.kind);
         }
         if (e.kind === "doc") {
-          for (const ann of byPage[e.oldPage] || []) await this._burnAnnotation(page, ann, helv, out);
+          const anns = byPage[e.oldPage] || [];
+          for (const ann of anns) await this._burnAnnotation(page, ann, helv, out);
+          const redacts = anns.filter((a) => a.type === "redact");
+          if (redacts.length) await this._redactPageContent(out, page, redacts);
         }
       }
       return out.save();

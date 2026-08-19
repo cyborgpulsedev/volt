@@ -15,6 +15,7 @@
     "check:vendor": "node scripts/update-vendor.mjs --check",
     "test:watch": "node scripts/test-file-watcher.mjs",
     "test:utils": "node scripts/test-utils.mjs",
+    "test:sign": "node scripts/test-sign.mjs",
     "test:office": "node scripts/test-office.mjs",
     "test:artifacts": "node scripts/test-artifact-regression.mjs",
     "test:release-feed": "node scripts/test-release-feed.mjs",

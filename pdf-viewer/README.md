@@ -1569,6 +1569,64 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
    skip the upload and leave the release empty. One release per tag, ever
    — a re-run never creates a duplicate.
 
+**Release pipeline at a glance.** The workflow (`.github/workflows/release.yml`,
+`.github/workflows/ci.yml`) runs the release through five guards **before
+anything is created or published**, then publishes through a race-free,
+retry-safe path:
+
+1. **Release ref is on main** — the release must be a commit on
+   `origin/main`'s history; by default it must also be the *current* tip
+   (tag pushes are strict — re-push a stale tag and it fails here). A
+   `workflow_dispatch` may opt into an older main SHA only with
+   `confirm_stale_ref=true`.
+2. **Generated artifacts match the tree** — `npm run check:sw` re-derives
+   sw.js + index.html from the current files; a stale worker (old cache
+   name, old `window.__VOLT_VERSION`) fails before any tag is cut.
+3. **Signing secrets configured** — `GH_TOKEN` always; `CSC_LINK` unless
+   the scratch path is used.
+4. **Tag matches `package.json` version** — push-only (a dispatch has no
+   tag name; its version is whatever the tree says).
+5. **Release certificate is a real CA cert** — `signing-setup.cjs
+   check-release` refuses self-signed / expired / keyless certs. It runs
+   **before** the release is pre-created, so a failed guard aborts with
+   NO release created and the feed stays untouched.
+
+After the guards: the workflow **pre-creates the GitHub release** (title +
+`release-notes.md` as the body), then electron-builder builds, signs, and
+publishes into it. The pre-create exists because electron-builder's GitHub
+publisher races itself — the blockmap and installer artifacts resolve their
+release concurrently, both see "doesn't exist", and both create one (seen
+live as two releases with split assets). With one release pre-created, both
+publishers reuse it; `EP_GH_IGNORE_TIME` makes retries reuse it at ANY age
+(re-uploading fresh artifacts, never skipping past the 2-hour window and
+never duplicating), and a stale draft is force-published so the feed can't
+404. `sign:check` then verifies the artifacts — a failure fails the run
+(the upload already happened, so delete the release and investigate if it
+ever trips). Related CI side: the `checks` job asserts the live feed
+answers 200 and — on main pushes — that its advertised version equals the
+tree's `package.json`.
+
+**The one deliberate exception — scratch unsigned releases.**
+`scratch_unsigned=true` skips the certificate requirement, the cert guard,
+and `sign:check` (needs only `GH_TOKEN`), publishing an UNSIGNED build to
+prove the publish/feed mechanics before a real cert exists. SmartScreen
+warnings + no updater signature verification, testing only — delete it
+with `gh release delete v<version>` after verifying (keep the git tag).
+
+**What still needs a real certificate.** Today `CSC_LINK` holds the
+self-signed dev cert, so the pipeline is proven end-to-end up to guard 5:
+live tag runs pass guards 1–4 and stop at the certificate guard with zero
+releases created (the feed is still the pre-ship 404). Shipping needs a
+CA-issued Authenticode cert (see `docs/signing-onboarding.md`): import it
+locally with `npm run sign:setup import <your.pfx> [password]`, set the
+base64 PFX + password as the `CSC_LINK` / `CSC_KEY_PASSWORD` secrets, then
+re-push the `v1.0.1` tag (re-cut it at the current main tip first if main
+has moved) or run the workflow from the Actions tab. That run passes all
+five guards, publishes the signed `Volt-Setup-1.0.1.exe` + `latest.yml` +
+`.blockmap` with the v1.0.1 notes as the release body, and the drift
+check asserts the match (feed version == `package.json`) on the next main
+push.
+
 ## Package release (Windows installer)
 
 From `pdf-viewer/`, build the installer with electron-builder:

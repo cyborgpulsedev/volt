@@ -215,6 +215,47 @@ t("sec-keys: deterministic for same inputs", (() => {
   return hex(a.O) === hex(b.O) && hex(a.U) === hex(b.U) && hex(a.key) === hex(b.key);
 })());
 
+// ── regression: locked exports rejected their own password (2026-08) ──
+// The pad clobbered the password (out.set lost its offset), the pad appended
+// its TAIL instead of the spec's FIRST (32−n) bytes, passwords were UTF-8
+// instead of pdf.js's low-byte conversion, and O used the FULL MD5(owner)
+// instead of the first n bytes — all four made the U/O the reader re-derives
+// disagree with what Volt wrote. Vectors below were cross-checked with an
+// independent MD5 (Node crypto) + RC4 implementation.
+t("pad: password bytes survive, head of pad appended (hunter2)", (() => {
+  const p = U._pdfPad("hunter2");
+  return hex(p) === "68756e74657232" + "28bf4e5e4e758a4164004e56fffa01082e2e00b6d0683e802f";
+})());
+t("pad: empty password → the whole 32-byte pad", hex(U._pdfPad("")) === hex(U.PDF_PAD));
+t("pad: non-ASCII chars contribute their LOW bytes (pdf.js stringToBytes)", (() => {
+  const p = U._pdfPad("päss");
+  return hex(p) === "70e47373" + "28bf4e5e4e758a4164004e56fffa01082e2e00b6d0683e802f0ca9fe";
+})());
+t("pad: 32-char password is truncated, no pad appended", (() => {
+  const long = "a".repeat(40);
+  const p = U._pdfPad(long);
+  return p.length === 32 && hex(p) === "61".repeat(32);
+})());
+t("sec-keys: O/U/key match independent RFC vectors (all perms denied, id=0x07×16)", (() => {
+  const k = U.pdfSecurityKeys("open", "owner", { printing: false, modifying: false, copying: false, annotations: false }, new Uint8Array(16).fill(7));
+  return hex(k.O) === "8eeb095819662a774442fb072e3d9f19e9d130ec09a4d0061e78fe920f7ab62f" &&
+    hex(k.U) === "794a5d520c6f70472b04a2ba465b6d4201de4ef31a339e8e0db501aa000f0aca" &&
+    hex(k.key) === "8aa6526217" &&
+    k.P === 4294967235;
+})());
+t("sec-keys: O key is the FIRST 5 bytes of MD5(owner pad), not the full hash", (() => {
+  const k = U.pdfSecurityKeys("open", "owner", {}, new Uint8Array(16).fill(7));
+  const owner = U._pdfPad("owner");
+  const user = U._pdfPad("open");
+  const expect = U.rc4(U.md5(owner).slice(0, 5), user);
+  const wrongFull = U.rc4(U.md5(owner), user); // the old bug
+  return hex(k.O) === hex(expect) && hex(k.O) !== hex(wrongFull);
+})());
+t("sec-keys: U is RC4(key, pad) — what pdf.js re-derives on password entry", (() => {
+  const k = U.pdfSecurityKeys("open", "owner", {}, new Uint8Array(16).fill(7));
+  return hex(k.U) === hex(U.rc4(k.key, U.PDF_PAD));
+})());
+
 // content-stream redaction: a stream with two text lines, one inside a rect
 const redactStream = [
   "BT /F1 12 Tf 72 700 Td (CONFIDENTIAL) Tj 0 -16 Td (public note) Tj ET",
@@ -426,6 +467,19 @@ t("restoreSummaryRows: chat in backup (plural + singular)", (() => {
     U.restoreSummaryRows({ annCount: 0, chatInBackup: true, chatCount: 1 }).find((x) => x.k === "Chat").v === "1 message";
 })());
 t("restoreSummaryRows: chat not in backup", U.restoreSummaryRows({ annCount: 0 }).find((x) => x.k === "Chat").v === "Not in this backup");
+t("restoreSummaryRows: bookmarks in backup (plural + singular)", (() => {
+  const rows = U.restoreSummaryRows({ annCount: 0, bmInBackup: true, bmCount: 3 });
+  return rows.find((x) => x.k === "Bookmarks").v === "3 bookmarks" &&
+    U.restoreSummaryRows({ annCount: 0, bmInBackup: true, bmCount: 1 }).find((x) => x.k === "Bookmarks").v === "1 bookmark";
+})());
+t("restoreSummaryRows: bookmarks not in backup", (() => {
+  const r = U.restoreSummaryRows({ annCount: 0 }).find((x) => x.k === "Bookmarks");
+  return r.v === "Not in this backup" && r.title.includes("didn't include bookmarks");
+})());
+t("restoreSummaryRows: bookmark row sits right after Annotations", (() => {
+  const rows = U.restoreSummaryRows({ annCount: 1, notes: 0, bmInBackup: true, bmCount: 2 });
+  return rows[0].k === "Annotations" && rows[1].k === "Bookmarks" && rows[1].v === "2 bookmarks";
+})());
 
 // ── small display helpers ──
 t("stripPdfExt: strips .pdf case-insensitively, once", U.stripPdfExt("report.PDF") === "report" && U.stripPdfExt("doc.pdf.pdf") === "doc.pdf");

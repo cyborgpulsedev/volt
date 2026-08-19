@@ -420,6 +420,11 @@ body {
 .tb-menu-item.checked svg { display: none; }
 .tb-menu-item-danger { color: var(--danger); }
 .tb-menu-item-danger:hover { color: var(--danger); background: rgba(248, 113, 113, 0.1); }
+
+/* Thumbnail bookmark context menu (right-click a sidebar page thumbnail) —
+   the area-menu card, sized for two menu items. [hidden] owns open/close. */
+.thumb-bm-menu { width: 232px; padding: 6px; }
+.thumb-bm-menu .tb-menu-item { font-size: 12px; }
 /* hint footer inside a menu panel (the Markup panel's mode caption) */
 .tb-menu-hint {
   font-size: 11px;
@@ -949,6 +954,26 @@ body.sidebar-hidden .sidebar + #viewer { border-radius: 0; }
 .outline-item.indent-2 { padding-left: 32px; }
 .outline-item.indent-3 { padding-left: 44px; }
 
+/* Bookmarked pages — the pinned section at the top of the Outline tree */
+.outline-bm-section { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border, rgba(128,128,128,0.25)); }
+.outline-bm-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px 4px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-faint);
+  user-select: none;
+}
+.outline-bm-ic { display: inline-flex; color: var(--accent, #4cc9f0); }
+.outline-bm-ic svg { width: 13px; height: 13px; fill: currentColor; }
+.outline-bm-count {
+  min-width: 17px; height: 17px; padding: 0 4px; margin-left: auto;
+  border-radius: 9px; background: var(--accent, #4cc9f0); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
+}
+.outline-bm-item { display: flex; align-items: baseline; gap: 4px; }
+.outline-bm-item .outline-pg { flex: none; }
+.outline-bm-label { overflow: hidden; text-overflow: ellipsis; }
+
 /* Notes list */
 .notes-list { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
 .note-card {
@@ -1154,6 +1179,17 @@ body.sidebar-hidden .sidebar + #viewer { border-radius: 0; }
   letter-spacing: 0.3px;
 }
 .page-wrap:last-child::after { content: none; }
+
+/* Two-pages mode: the spread label "1–2" hangs centered under the WHOLE pair
+   (its horizontal midpoint computed by _ensurePage into --pair-x), not under
+   one page — and a lone trailing page keeps its own number instead of being
+   swallowed by the :last-child rule above. */
+.page-wrap[data-pair-label]::after {
+  left: var(--pair-x);
+}
+.pages.pages-spread .page-wrap:last-child::after {
+  content: attr(data-label);
+}
 
 .page-canvas {
   display: block;

@@ -4,17 +4,22 @@
    (R=2, V=1, RC4-40) — the classic "open password / owner password /
    copy-print-modify permissions" mechanism every PDF reader
    implements. pdf-lib cannot WRITE encryption (it only reads it), so
-   this module does the byte-level work itself over pdf-lib's clean
-   output (classic xref table, no object streams — Volt controls the
-   bytes it locks): it encrypts every string literal and stream with
-   the per-object key (Algorithm 1), injects the /Encrypt dictionary,
-   and rebuilds the xref + trailer so the result is a normal,
-   standards-compliant encrypted PDF.
+   this module does the byte-level work itself over pdf-lib's CLASSIC
+   output — save with { useObjectStreams: false } (Volt.Ann
+   .toAnnotatedPdf already does), which guarantees every object is a
+   top-level `N G obj` with a classic xref table and no ObjStm/xref
+   stream (that layout is what the byte walker controls): it encrypts
+   every string literal and stream with the per-object key (Algorithm
+   1), injects the /Encrypt dictionary, and rebuilds the xref +
+   trailer (hoisting /Root /Info /ID from xref-stream trailers) so the
+   result is a normal, standards-compliant encrypted PDF.
 
    The crypto itself (MD5, RC4, key derivation) lives in Utils as pure
    functions with unit tests; this module is the PDF-syntax walker
-   that applies it. Verified end-to-end by the smoke's `secure` stage,
-   which opens the locked file through pdf.js (the app's own reader).
+   that applies it. Verified end-to-end by scripts/test-lock.mjs,
+   which locks real pdf-lib output and opens it through the vendored
+   pdf.js (the app's own reader) with both the user and owner
+   passwords — the exact path that used to reject its own password.
    ═══════════════════════════════════════════════════════════════ */
 (function (global) {
   "use strict";
@@ -30,6 +35,15 @@
       const o = opts || {};
       const perms = o.permissions || {};
       const src = this._latin1(bytes);
+      // This walker rebuilds a CLASSIC xref table, which cannot express the
+      // "compressed" entries of an object stream. A locked ObjStm file would
+      // have an unreachable /Root (and, in the reader's recovery pass, a bogus
+      // /Encrypt found inside ciphertext) — fail loudly instead of exporting a
+      // PDF that rejects its own password. Producers must save with
+      // { useObjectStreams: false } (Volt.Ann.toAnnotatedPdf already does).
+      if (/\/Type\s*\/ObjStm\b/.test(src)) {
+        throw new Error("Volt.Secure requires classic xref output — save the PDF with { useObjectStreams: false } before locking (objects hidden in an ObjStm can't be re-encoded by the classic xref rebuild)");
+      }
       const id = this._trailerId(src, bytes);
       const keys = Utils.pdfSecurityKeys(o.userPassword, o.ownerPassword, perms, id);
       const out = this._rebuildEncrypted(src, bytes, keys, id);
@@ -104,6 +118,22 @@
       //     guarantee the /ID the security algorithms (and readers) expect ──
       const trM = /trailer\s*<<([\s\S]*?)>>/.exec(tail);
       let inner = trM ? trM[1] : "";
+      // A modern producer (pdf-lib) writes the trailer as an XREF-STREAM dict
+      // inside the last object — there is no `trailer<<>>` keyword. Its /Root
+      // /Info (/ID if present) live in that final object's body, so hoist them
+      // into the rebuilt classic trailer or the catalog is unreachable.
+      if (!trM && objs.length) {
+        const lastObj = objs[objs.length - 1];
+        const lastBody = src.slice(lastObj.bodyStart, lastObj.end);
+        const rootM = /\/Root\s+(\d+)\s+(\d+)\s+R/.exec(lastBody);
+        const infoM = /\/Info\s+(\d+)\s+(\d+)\s+R/.exec(lastBody);
+        const idM = /\/ID\s*(\[[\s\S]*?\])/.exec(lastBody);
+        const hoist = [];
+        if (rootM && !/\/Root\b/.test(inner)) hoist.push("/Root " + rootM[1] + " " + rootM[2] + " R");
+        if (infoM && !/\/Info\b/.test(inner)) hoist.push("/Info " + infoM[1] + " " + infoM[2] + " R");
+        if (idM && !/\/ID\s*\[/.test(inner)) hoist.push("/ID " + idM[1]);
+        if (hoist.length) inner += " " + hoist.join(" ");
+      }
       inner = inner.replace(/\/Size\s+\d+/, "");
       inner = inner.replace(/\/Encrypt\s+\d+\s+\d+\s+R/, "");
       if (!/\/ID\s*\[/.test(inner)) {

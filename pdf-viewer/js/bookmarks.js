@@ -131,6 +131,16 @@
       this._app().toast("All bookmarks cleared", "ok");
     },
 
+    /** Remove every bookmark on one page (thumbnail right-click menu). */
+    removePageBookmarks(page) {
+      const before = this.list.length;
+      this.list = this.list.filter((b) => b.page !== page);
+      if (this.list.length === before) return;
+      this._save();
+      this.refreshAll();
+      this._app().toast("Bookmarks removed from page " + page, "ok");
+    },
+
     /* ── inline edit (rename the label in the list card) ────── */
     _beginEdit(card, id) {
       const bm = this.list.find((b) => b.id === id);
@@ -168,6 +178,9 @@
       this.refreshBadge();
       this.refreshList();
       this.renderAllMarkers();
+      // keep the "Bookmarked pages" section pinned atop the Outline tree in sync
+      const app = this._app();
+      if (app && typeof app._refreshOutlineBookmarks === "function") app._refreshOutlineBookmarks();
     },
 
     refreshBadge() {

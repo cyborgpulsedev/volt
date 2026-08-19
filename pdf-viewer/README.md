@@ -85,8 +85,10 @@ reading immediately. On a fresh profile (nothing saved under
 `volt:setup-done`) a small pill quietly appears in the blank toolbar area:
 **← Click here to get started or for help**. It fades in, holds, then
 slides away behind the **Volt ▾** menu on its own — no buttons, nothing to
-dismiss — and clicking it opens **Help & guides**. Engaging with it (or
-finishing the wizard) marks setup as answered so the hint doesn't replay.
+dismiss — and clicking it opens **Help & guides**. With
+**prefers-reduced-motion** enabled it fades in and out instead of sliding.
+Engaging with it (or finishing the wizard) marks setup as answered so the
+hint doesn't replay.
 
 The **Setup wizard** (four steps: *Welcome → Desktop & appearance → AI →
 You're set*) stays reachable anytime from **Volt ▾ → Setup wizard…**. The
@@ -283,9 +285,16 @@ Pick the preset, paste your API key (stored only in your browser's
   this page** drops a jump mark on the page you're reading (a small ribbon
   appears in that page's top-right corner), and every bookmark shows as a
   card with its page number and an optional label you can **rename**
-  inline or **remove** with one click. The **Find bookmarks** box filters
-  the list live by label or page number, clicking a card jumps straight to
-  the page, and **Clear all** wipes the document's set after a confirm.
+  inline or **remove** with one click. You never need the panel to add one:
+  **Markup ▸ Bookmark this page** bookmarks the page in view, and
+  **right-clicking a page thumbnail** pops a menu to bookmark that page (or
+  remove its bookmarks). The **Find bookmarks** box filters the list live by
+  label or page number, clicking a card jumps straight to the page, and
+  **Clear all** wipes the document's set after a confirm. Your bookmarks are
+  also pinned as a **Bookmarked pages** section at the top of the sidebar's
+  **Outline** tree — sorted by page, always above the document's own
+  outline, live-updating as you add or remove bookmarks, and one click jumps
+  to the page.
   Bookmarks follow their document through renames and re-exports (same
   `volt:bm:` identity scheme as annotations) and survive the **pages
   manager**: delete or reorder pages and bookmarks renumber with them,
@@ -299,7 +308,10 @@ Pick the preset, paste your API key (stored only in your browser's
   clockwise, **Continuous scroll / One page / Two pages** — page modes,
   remembered per user: free scrolling column, one page per scroll (scrolling
   rests on page boundaries), or a book spread with pages side by side in
-  pairs — and in Two pages, ← / →, PageUp/PageDown or clicks on the left /
+  pairs — **Ctrl+1 / Ctrl+2 / Ctrl+3** switch modes from the keyboard — each
+  spread carries a **pair label** ("1–2", "3–4", …) centered under the row
+  and the sidebar's Pages tab **highlights both pages of the visible spread**
+  — and in Two pages, ← / →, PageUp/PageDown or clicks on the left /
   right margin **flip the spread like a book** with a page-turn animation —
   Light skin, Dark skin), and **Tools** (OCR this document, OCR
   language, OCR text layer, Read aloud). **OCR language** opens its own small popover —
@@ -599,7 +611,9 @@ Pick the preset, paste your API key (stored only in your browser's
 - **Exporting** — an **annotated PDF** (highlights/underlines/strikes/notes
   burned in via pdf-lib), a **Secure PDF…** (password-protect the exported
   file and restrict copying / printing / modifying — the PDF standard
-  security handler, verified by the smoke through pdf.js), a
+  security handler; the exported file opens with the user **and** owner
+  passwords in the vendored pdf.js, verified end-to-end by `npm run
+  test:lock`), a
   **Send feedback…** (the Volt ▾ menu drafts a GitHub issue on the public
   repository with your message and an attached environment block — version,
   engine, OS, open document — so maintainers can reproduce it; it opens in
@@ -620,7 +634,8 @@ Pick the preset, paste your API key (stored only in your browser's
   classic xref — built on pure unit-tested helpers and asserted in the
   exported bytes by the smoke; the one thing a strict validator may still
   flag is semi-transparent annotation overlays, so run veraPDF or similar
-  before shipping an audit file), a **Markdown** notes file, a **Chat
+  before shipping an audit file), a **Markdown** notes file (annotations
+  plus your bookmarks, each with its page and label), a **Chat
   transcript** (Markdown — question/answer pairs with page citations, for
   sharing the conversation outside Volt), a portable **JSON backup**
   (export + re-import anywhere), or **Word / Excel / LibreOffice
@@ -663,7 +678,8 @@ Pick the preset, paste your API key (stored only in your browser's
   temp folder and opens it in your default Word/Excel/PowerPoint
   handler — the same as double-clicking it in Explorer. (In the PWA the
   action is omitted; there is no shell to hand files to.) The backup dialog shows three
-  checkboxes — **Annotations** (always included), **AI overrides** (model,
+  checkboxes — **Annotations** (always included, and with them your
+  **bookmarks**, which ride the same marks layer), **AI overrides** (model,
   max context, system prompt) and **Chat history** — so a backup can be
   marks-only, the full setup, or anything between, and a restore applies
   exactly the layers the file contains. **Restore backup…** (export menu, or
@@ -681,8 +697,8 @@ Pick the preset, paste your API key (stored only in your browser's
   Volt prompts you to **open that document first** instead of importing
   into whatever happens to be open. After a restore, a **summary card**
   shows exactly what landed — the annotation count (marks vs notes), the
-  applied AI override values, and the chat length — staying up for a few
-  seconds so you can double-check the import before moving on. For transfers,
+  bookmarks, the applied AI override values, and the chat length — staying
+  up for a few seconds so you can double-check the import before moving on. For transfers,
   **Restore backup from URL…** (export menu, or the welcome screen) pastes a
   `.json` link and runs the identical match-and-open flow — the backup is
   fetched in the renderer, so the host must allow CORS (raw/plain download
@@ -1528,7 +1544,8 @@ it appears, never silently shipped.
 
 Every push (any branch) and every pull request runs ALL of the self-test
 gates on Windows CI — see `.github/workflows/ci.yml` at the repo root:
-`check:launchers`, `test:utils`, `test:office`, `test:watch`, `check:vendor`,
+`check:launchers`, `test:utils`, `test:office`, `test:watch`, `test:lock`
+(secure exports: lock → open in the vendored pdf.js), `check:vendor`,
 `smoke:browser:headless` (the PWA/no-preload render smoke, headless so the
 VM-safe `--smoke-no-focus` mode is used), and `test:artifacts` (which itself
 runs the Electron smoke headless, negative and positive) — plus the slower
@@ -1539,15 +1556,17 @@ thing CI can't do; it stays in the local `npm run smoke` / `smoke:browser`.
 ```bash
 node scripts/make-sample.mjs   # regenerate the sample PDF + embedded copy (from the repo root: scripts/ is Volt/scripts)
 node scripts/test-utils.mjs    # unit tests for utils (chunking, markdown, scoring, focus-trap wrap)
+node scripts/test-lock.mjs     # secure export e2e: Volt.Secure-locked pdf-lib output must open in the vendored pdf.js
 node scripts/test-file-watcher.mjs  # unit tests for the disk-change watcher
 node scripts/test-artifact-regression.mjs  # generator regression guard (see tech notes)
 node scripts/test-release-feed.mjs   # full auto-update round-trip (publishes a scratch feed, see below)
-npm run test:watch / test:utils / test:artifacts / test:release-feed  # the same, via npm
+npm run test:watch / test:utils / test:lock / test:artifacts / test:release-feed  # the same, via npm
 node scripts/mock-llm.mjs      # fake OpenAI-compatible endpoint for local testing (from the repo root, as above)
 node serve.mjs                 # static server on :8421
 node scripts/update-vendor.mjs # update vendored pdf.js/pdf-lib (see above)
 node scripts/update-vendor.mjs --verify-staged <dir>  # pre-swap DOM-contract gate only
 node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashes)
+node scripts/check-feed-drift.mjs   # watch the live latest.yml vs this tree (npm run feed:watch; --once = one-shot check)
 ```
 
 ## Releasing a version
@@ -1613,7 +1632,14 @@ node scripts/gen-sw.mjs --write # regenerate sw.js + stamp index.html (?v= hashe
    age and re-uploads the fresh artifacts into it. Without that, a
    re-run past electron-builder's 2-hour reuse window would silently
    skip the upload and leave the release empty. One release per tag, ever
-   — a re-run never creates a duplicate.
+   — a re-run never creates a duplicate. The one reuse that is refused:
+   a release that has **already shipped** — published, with the complete
+   `latest.yml` + installer + `.blockmap` asset set — fails the run
+   instead of being overwritten, because those are artifacts users have
+   already downloaded (a re-tag, an accidental re-dispatch, or a leftover
+   scratch release would otherwise silently replace them). Delete the
+   release first (`gh release delete v<version>` — the git tag stays) to
+   re-publish that version.
 
 **Release pipeline at a glance.** The workflow (`.github/workflows/release.yml`,
 `.github/workflows/ci.yml`) runs the release through five guards **before
@@ -1646,11 +1672,20 @@ live as two releases with split assets). With one release pre-created, both
 publishers reuse it; `EP_GH_IGNORE_TIME` makes retries reuse it at ANY age
 (re-uploading fresh artifacts, never skipping past the 2-hour window and
 never duplicating), and a stale draft is force-published so the feed can't
-404. `sign:check` then verifies the artifacts — a failure fails the run
-(the upload already happened, so delete the release and investigate if it
-ever trips). Related CI side: the `checks` job asserts the live feed
-answers 200 and — on main pushes — that its advertised version equals the
-tree's `package.json`.
+404. An existing release is reused only while it is empty, partial (a
+crashed upload), or a draft — once it is **published with the full asset
+set** (`latest.yml` + installer + `.blockmap`) it counts as genuinely
+shipped and the run fails rather than overwrite artifacts users already
+downloaded. `sign:check` then verifies the artifacts — a failure fails the
+run (the upload already happened, so delete the release and investigate if
+it ever trips). After every publish the workflow runs its own
+**post-publish feed verification**: it polls the public auto-update feed
+(`releases/latest/download/latest.yml` — the URL every installed copy
+hits) until it answers 200 with the version that was just published, and
+fails the run if it never does — a publish that reported success while
+leaving the release empty or stale can't slip through unnoticed. Related
+CI side: the `checks` job asserts the live feed answers 200 and — on main
+pushes — that its advertised version equals the tree's `package.json`.
 
 **The one deliberate exception — scratch unsigned releases.**
 `scratch_unsigned=true` skips the certificate requirement, the cert guard,

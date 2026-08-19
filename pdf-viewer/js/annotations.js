@@ -2824,20 +2824,35 @@
 
     /* ── export ─────────────────────────────────────────────── */
     toMarkdown() {
-      if (!this.list.length) return "# Annotations\n\n_No annotations._\n";
       let md = "# Annotations\n";
       md += `_Document: ${this.docInfo?.name || "untitled"}_\n\n`;
-      const sorted = [...this.list].sort((a, b) => (a.page - b.page) || (a.createdAt - b.createdAt));
-      for (const ann of sorted) {
-        md += `## ${TYPES[ann.type]?.label || ann.type} — page ${ann.page}\n`;
-        if (ann.text) md += `> ${ann.text}\n`;
-        else if (ann.rect) {
-          if (ann.type === "form") md += `> _(form field: ${ann.fieldType || "text"}${ann.name ? " — " + ann.name.replace(/^volt_field_/, "") : ""})_\n`;
-          else if (ann.type === "signature") md += "> _(signature)_\n";
-          else if (ann.type === "redact") md += "> _(redaction)_\n";
-          else md += ann.type === "rect" ? "> _(rectangle)_\n" : "> _(area highlight)_\n";
+      if (this.list.length) {
+        const sorted = [...this.list].sort((a, b) => (a.page - b.page) || (a.createdAt - b.createdAt));
+        for (const ann of sorted) {
+          md += `## ${TYPES[ann.type]?.label || ann.type} — page ${ann.page}\n`;
+          if (ann.text) md += `> ${ann.text}\n`;
+          else if (ann.rect) {
+            if (ann.type === "form") md += `> _(form field: ${ann.fieldType || "text"}${ann.name ? " — " + ann.name.replace(/^volt_field_/, "") : ""})_\n`;
+            else if (ann.type === "signature") md += "> _(signature)_\n";
+            else if (ann.type === "redact") md += "> _(redaction)_\n";
+            else md += ann.type === "rect" ? "> _(rectangle)_\n" : "> _(area highlight)_\n";
+          }
+          md += "\n";
         }
-        md += "\n";
+      } else {
+        md += "_No annotations._\n\n";
+      }
+      // bookmarks ride along so the exported notes carry the user's jump marks
+      md += "## Bookmarks\n\n";
+      const bms = (global.Volt.Bm && Array.isArray(global.Volt.Bm.list))
+        ? [...global.Volt.Bm.list].sort((a, b) => (a.page - b.page) || (a.createdAt - b.createdAt))
+        : [];
+      if (!bms.length) {
+        md += "_No bookmarks._\n";
+      } else {
+        for (const b of bms) {
+          md += `- **Page ${b.page}**${b.label ? " — " + b.label : ""}\n`;
+        }
       }
       return md;
     },
@@ -2853,7 +2868,7 @@
       const withChat = opts.chatHistory !== false;
       const out = {
         app: "volt",
-        version: 5, // v5 adds fileFingerprint — a content hash that hardens restore matching
+        version: 6, // v6 adds bookmarks — the backup carries the user's jump marks too
         file: this.docInfo?.name,
         fileSize: this.docInfo?.size,   // lets Restore backup match more than the name alone
         filePages: this.docInfo?.pages,
@@ -2866,6 +2881,9 @@
         fileFingerprint: this.docInfo?.fingerprint || null,
         exportedAt: new Date().toISOString(),
         annotations: this.list,
+        // bookmarks ride along (same document identity, same marks layer as
+        // the annotations) so a restore carries them across documents
+        bookmarks: global.Volt.Bm && Array.isArray(global.Volt.Bm.list) ? global.Volt.Bm.list : [],
       };
       if (withAi) {
         out.aiSettings = global.Volt.AI && global.Volt.AI._docSettings ? global.Volt.AI._docSettings() : null;
@@ -3157,7 +3175,12 @@
         const redacts = byPage[pageNum].filter((a) => a.type === "redact");
         if (redacts.length) await this._redactPageContent(pdf, page, redacts);
       }
-      return pdf.save();
+      // Classic output (no object streams / xref streams): Volt.Secure.lock
+      // rebuilds the xref + trailer byte-level and needs every object as a
+      // top-level `N G obj` with a classic table — the pdf-lib v2 default
+      // (objects hidden in an ObjStm behind an xref stream) would produce a
+      // locked file whose /Root is unreachable and its password check broken.
+      return pdf.save({ useObjectStreams: false });
     },
 
     /** Build a new PDF from a page-management plan. plan entries:
@@ -3226,6 +3249,28 @@
       const list = Array.isArray(data) ? data : data.annotations;
       if (!Array.isArray(list)) throw new Error("Not a valid annotations file");
       this._mutate(() => { this.list = list; });
+      // restore the document's bookmarks (if the backup carried them — a
+      // backup without the field leaves bookmarks untouched, matching the
+      // omit-not-null layer semantics). Pages are clamped to the current
+      // document so a restore into a different/shorter PDF can't leave
+      // unreachable jump marks.
+      const bmInBackup = data && typeof data === "object" && !Array.isArray(data) && Array.isArray(data.bookmarks);
+      const bmMod = global.Volt.Bm;
+      if (bmInBackup && bmMod) {
+        const numPages = (this.docInfo && Number(this.docInfo.pages)) ||
+          (this._app().currentDoc ? this._app().currentDoc.numPages : 0);
+        bmMod.list = data.bookmarks
+          .filter((b) => b && typeof b === "object" && Number.isFinite(Number(b.page)))
+          .map((b) => ({
+            id: typeof b.id === "string" && b.id ? b.id : "bm_" + Math.random().toString(36).slice(2, 10),
+            page: numPages ? Utils.clamp(Math.round(Number(b.page)), 1, numPages) : Math.max(1, Math.round(Number(b.page))),
+            label: typeof b.label === "string" ? b.label : "",
+            createdAt: Number.isFinite(Number(b.createdAt)) ? Number(b.createdAt) : Date.now(),
+            updatedAt: Number.isFinite(Number(b.updatedAt)) ? Number(b.updatedAt) : Date.now(),
+          }));
+        bmMod._save();
+        bmMod.refreshAll();
+      }
       // restore the document's AI overrides (if present)
       const hasAi = data && typeof data === "object" && !Array.isArray(data) && data.aiSettings && typeof data.aiSettings === "object";
       if (hasAi) {
@@ -3259,6 +3304,7 @@
         data.fileFingerprint === this.docInfo.fingerprint;
       if (!fpMatch && data && typeof data === "object" && !Array.isArray(data) && data.file && this.docInfo && data.file !== this.docInfo.name) {
         const parts = [];
+        if (bmInBackup) parts.push("bookmarks");
         if (hasAi) parts.push("AI overrides");
         if (hasChat) parts.push("chat history");
         if (parts.length) {

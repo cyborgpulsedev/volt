@@ -9,9 +9,16 @@
 #        this job runs on windows-latest) + the hidden-console VBS
 #        wrapper checks. Catches the ".cmd died silently" bug class.
 #
-#     2. Unit tests           (npm run test:utils)       118 tests
+#     2. Unit tests           (npm run test:utils)       210 tests
 #        pure helpers: markdown, RAG chunking, focus-trap wrap,
 #        window-state, the launcher/VBS static rules themselves.
+#
+#     2b. Secure-export e2e   (npm run test:lock)          10 tests
+#        locks real pdf-lib output with Volt.Secure and opens the
+#        locked bytes through the VENDORED pdf.js (the app's own
+#        reader) with the user + owner passwords — ASCII + non-ASCII,
+#        multi-page, wrong/empty rejection, and the object-stream
+#        guard. This is the path that used to reject its own password.
 #
 #     3. Office export        (npm run test:office)       53 tests
 #        CRC32, the store-only ZIP writer, DOCX/XLSX structure,
@@ -121,6 +128,13 @@ jobs:
         # the PFX half soft-skips when the dev certificate isn't present
         # (certs/ is gitignored) — CI stays green either way
         run: npm run test:sign
+
+      - name: Secure-export end-to-end (lock → open in vendored pdf.js)
+        # locks real pdf-lib output with Volt.Secure and opens the locked
+        # bytes through the vendored pdf.js with the user + owner passwords
+        # (ASCII + non-ASCII, multi-page, wrong/empty rejection, and the
+        # object-stream guard) — the path that used to reject its own password
+        run: npm run test:lock
 
       - name: Office export unit tests (CRC32, ZIP, DOCX/XLSX, tables)
         run: npm run test:office

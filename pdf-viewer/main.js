@@ -688,7 +688,7 @@ async function realKeyStage(w) {
         const V = window.Volt.App;
         // deliberately mismatched: different name, size, pages, and fingerprint
         // (the open sample has its own 16-hex fp) — _matchesBackup must reject
-        const backup = { app: "volt", version: 5, file: "Mismatched-Backup.pdf",
+        const backup = { app: "volt", version: 6, file: "Mismatched-Backup.pdf",
           fileSize: 12345, filePages: 7, fileFingerprint: "0000000000000000",
           annotations: [], aiSettings: {}, chatHistory: [] };
         V._matchAndApplyBackup(backup); // async — _pendingBackup is set synchronously first
@@ -1180,7 +1180,7 @@ async function toolbarResizeStage(w) {
       aria.menuitems = ["btn-open", "btn-open-url", "btn-export", "btn-menu-settings", "btn-menu-help",
         "btn-check-updates", "btn-about", "btn-save-pdf", "btn-exit",
         "btn-fit-width", "btn-fit-page", "btn-rotate", "btn-mode-continuous", "btn-mode-one", "btn-mode-spread", "btn-theme-light", "btn-theme-dark",
-        "btn-ocr", "btn-ocr-lang", "btn-ocr-layer", "btn-readaloud", "btn-sig", "btn-date", "btn-form"].every((id) => document.getElementById(id).getAttribute("role") === "menuitem");
+        "btn-ocr", "btn-ocr-lang", "btn-ocr-layer", "btn-readaloud", "btn-sig", "btn-date", "btn-form", "btn-bm-now"].every((id) => document.getElementById(id).getAttribute("role") === "menuitem");
       aria.modeItems = [...document.querySelectorAll("#menu-markup-panel .mode-btn")]
         .every((b) => b.getAttribute("role") === "menuitem");
       aria.expanded0 = ["btn-brand", "btn-view", "btn-tools", "btn-markup"].every((id) => trigOf(id).getAttribute("aria-expanded") === "false");
@@ -2000,10 +2000,12 @@ function runSmokeTest(w) {
             const rs = { error: null };
             try {
               const list = Volt.Ann.list;
-              const json = JSON.stringify({ app: "volt", version: 5, file: Volt.App.currentDocInfo.name,
+              const json = JSON.stringify({ app: "volt", version: 6, file: Volt.App.currentDocInfo.name,
                 fileSize: Volt.App.currentDocInfo.size, filePages: Volt.App.currentDocInfo.pages,
                 fileFingerprint: Volt.App.currentDocInfo.fingerprint,
                 annotations: list,
+                bookmarks: [{ id: "smoke-bm-1", page: 1, label: "Start", createdAt: 1, updatedAt: 1 },
+                            { id: "smoke-bm-2", page: 2, label: "", createdAt: 2, updatedAt: 2 }],
                 aiSettings: { model: "sum-smoke-model", maxContextChars: 900, systemPrompt: "Summary smoke prompt." },
                 chatHistory: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello", sources: [], error: false }] });
               await Volt.App._restoreBackup(new File([json], "backup.json"));
@@ -2020,6 +2022,12 @@ function runSmokeTest(w) {
               rs.bodyHasOverride = body.includes("sum-smoke-model") &&
                 body.includes("Context:") && body.includes("chars");
               rs.bodyHasChat = body.includes("2 messages");
+              // the backup carried bookmarks — they must land in Volt.Bm and
+              // the summary card must show the count
+              rs.bmRestored = Array.isArray(Volt.Bm.list) && Volt.Bm.list.length === 2 &&
+                Volt.Bm.list.some((b) => b.page === 1 && b.label === "Start") &&
+                Volt.Bm.list.some((b) => b.page === 2);
+              rs.bodyHasBm = body.includes("2 bookmarks");
               const rs1 = Date.now();
               // the card auto-dismisses at exactly 8s — a ~10s bound (not 12)
               // trims the worst case against the 60s smoke watchdog
@@ -2027,7 +2035,8 @@ function runSmokeTest(w) {
               rs.autoDismissed = rsEl.hidden === true;
             } catch (e) { rs.error = String((e && e.message) || e); }
             rs.allOk = rs.shown === true && rs.bodyHasCount === true && rs.bodyHasOverride === true &&
-              rs.bodyHasChat === true && rs.autoDismissed === true && !rs.error;
+              rs.bodyHasChat === true && rs.bmRestored === true && rs.bodyHasBm === true &&
+              rs.autoDismissed === true && !rs.error;
             // ── restore by URL ─────────────────────────────────
             // a fetched backup must run the SAME match-and-open flow as a
             // picked file: drive the URL modal in backup mode with a blob:
@@ -2036,11 +2045,14 @@ function runSmokeTest(w) {
             const rurl = { error: null };
             try {
               const list = Volt.Ann.list;
-              const json = JSON.stringify({ app: "volt", version: 5, file: Volt.App.currentDocInfo.name,
+              const json = JSON.stringify({ app: "volt", version: 6, file: Volt.App.currentDocInfo.name,
                 fileSize: Volt.App.currentDocInfo.size, filePages: Volt.App.currentDocInfo.pages,
                 fileFingerprint: Volt.App.currentDocInfo.fingerprint,
                 annotations: list, aiSettings: { model: "url-smoke-model", maxContextChars: 900, systemPrompt: "URL smoke prompt." },
                 chatHistory: [] });
+              // deliberately NO bookmarks field — a v6-less backup (or an
+              // older v5 file) must leave the restored bookmarks untouched
+              const bmBefore = (Volt.Bm.list || []).length;
               const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
               Volt.App._openUrlModal("backup");
               Volt.App.elements.urlInput.value = url;
@@ -2051,6 +2063,7 @@ function runSmokeTest(w) {
               const body = rsEl.querySelector(".rs-body").textContent;
               rurl.cardShown = rsEl.hidden === false;
               rurl.carriedModel = body.includes("url-smoke-model");
+              rurl.bmUntouched = (Volt.Bm.list || []).length === bmBefore;
               rurl.urlModalClosed = document.getElementById("url-modal").hidden === true;
               URL.revokeObjectURL(url);
               Volt.App._hideRestoreSummary(); // skip the 8s auto-dismiss — the summary stage already covers it
@@ -2070,7 +2083,8 @@ function runSmokeTest(w) {
               Volt.App._closeModal(document.getElementById("url-modal"));
             } catch (e) { rurl.error = String((e && e.message) || e); }
             rurl.allOk = rurl.cardShown === true && rurl.carriedModel === true &&
-              rurl.urlModalClosed === true && rurl.badUrlHint === true && !rurl.error;
+              rurl.bmUntouched === true && rurl.urlModalClosed === true &&
+              rurl.badUrlHint === true && !rurl.error;
             // ── text-highlight select-mode editing ─────────────────
             // underline/strike (quads) highlights get the area-style edit box
             // in select mode — but no resize handles: the move drag snaps the
@@ -3755,6 +3769,33 @@ function runSmokeTest(w) {
               localStorage.removeItem("volt:setup-done");
               S._maybeShowStartHint(true);
               setup.hintShows = !!hint && hint.hidden === false && hint.dataset.playing === "1";
+              // prefers-reduced-motion: the hint must FADE, not slide — with
+              // reduce matched, the entrance keyframes carry no translateX
+              // (the exit is a pure opacity fade too). Probe by stubbing
+              // matchMedia, replaying, and reading the newest animation's
+              // from-keyframe transform.
+              const realMM = window.matchMedia && window.matchMedia.bind(window);
+              const stubMM = (q) => q.includes("prefers-reduced-motion")
+                ? { matches: true, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }
+                : realMM(q);
+              const lastEntranceTf = () => {
+                const anims = hint.getAnimations();
+                for (let i = anims.length - 1; i >= 0; i--) {
+                  const kf = anims[i].effect && anims[i].effect.getKeyframes ? anims[i].effect.getKeyframes() : null;
+                  if (kf && kf.length && typeof kf[0].transform === "string") return kf[0].transform;
+                }
+                return null;
+              };
+              const tick = () => new Promise((r) => setTimeout(r, 60));
+              window.matchMedia = stubMM;
+              S._maybeShowStartHint(true);
+              await tick();
+              setup.hintFadesWhenReduced = lastEntranceTf() === "none";
+              window.matchMedia = realMM;
+              S._maybeShowStartHint(true);
+              await tick();
+              setup.hintSlidesByDefault = typeof lastEntranceTf() === "string" &&
+                /translateX/.test(lastEntranceTf());
               hint.click();
               setup.hintOpensHelp = document.getElementById("help-modal").hidden === false;
               document.getElementById("help-close").click();
@@ -3825,6 +3866,7 @@ function runSmokeTest(w) {
             else localStorage.removeItem("volt:setup-done");
             setup.allOk = setup.noBannerPopup === true && setup.hintPresent === true &&
               setup.hintSuppressed === true && setup.hintShows === true &&
+              setup.hintFadesWhenReduced === true && setup.hintSlidesByDefault === true &&
               setup.hintOpensHelp === true && setup.hintReplaysStopped === true &&
               setup.opens === true && setup.step2 === true &&
               setup.desktopOption === true && setup.aiShowsModel === true &&
@@ -6673,6 +6715,10 @@ function runSmokeTest(w) {
               const wraps = [...document.querySelectorAll(".page-wrap")]
                 .sort((a, b) => Number(a.dataset.page) - Number(b.dataset.page));
               spreadProbe.rendered = wraps.length >= 2;
+              // anchor the view on the first spread so the sidebar-active and
+              // label assertions measure a known pair (pages 1–2)
+              app4.goToPage(1, false);
+              await sleep(120);
               if (wraps.length >= 2) {
                 const r1 = wraps[0].getBoundingClientRect();
                 const r2 = wraps[1].getBoundingClientRect();
@@ -6688,6 +6734,22 @@ function runSmokeTest(w) {
               // the whole sample out side by side)
               const w3w = document.querySelector('.page-wrap[data-page="3"]');
               spreadProbe.wrapRows = !!w3w && w3w.getBoundingClientRect().top > wraps[0].getBoundingClientRect().top + 20;
+              // spread label: the pair "1–2" hangs centered under the WHOLE
+              // row (the left page carries it at --pair-x), the right page
+              // none — and the label really lands at the pair's midpoint
+              spreadProbe.pairLabel = wraps[0].dataset.label === "1–2" &&
+                wraps[0].hasAttribute("data-pair-label") && wraps[1].dataset.label === "";
+              const la = parseFloat(getComputedStyle(wraps[0], "::after").left || "0");
+              const expectPairX = (wraps[0].offsetWidth + 30 + wraps[1].offsetWidth) / 2;
+              spreadProbe.pairLabelCentered = Math.abs(la - expectPairX) <= 3;
+              // sidebar: BOTH pages of the visible spread light up (the active
+              // page follows the pair, not a single page)
+              const t1 = document.querySelector('.thumb-item[data-page="1"]');
+              const t2 = document.querySelector('.thumb-item[data-page="2"]');
+              const t3 = document.querySelector('.thumb-item[data-page="3"]');
+              spreadProbe.thumbPair = !!t1 && !!t2 && !!t3 &&
+                t1.classList.contains("active") && t2.classList.contains("active") &&
+                !t3.classList.contains("active");
               // ── one page: a mid-scroll rests on the nearest page boundary ──
               set("one");
               spreadProbe.oneChecked = document.getElementById("btn-mode-one").classList.contains("checked") &&
@@ -6741,6 +6803,12 @@ function runSmokeTest(w) {
               await sleep(350);
               spreadProbe.flipDone = !pagesEl.classList.contains("book-flip-out") &&
                 !pagesEl.classList.contains("book-flip-in") && !app4._flipping;
+              // the last spread (page 3 alone) labels itself "3" and marks
+              // just itself in the sidebar
+              const w3 = document.querySelector('.page-wrap[data-page="3"]');
+              spreadProbe.loneLabel = !!w3 && w3.dataset.label === "3";
+              spreadProbe.thumbLone = !!t3 && t3.classList.contains("active") &&
+                !!t1 && !t1.classList.contains("active");
               const pr = pagesEl.getBoundingClientRect();
               pagesEl.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: pr.left + 20, clientY: pr.top + 120 }));
               await sleep(650);
@@ -6760,6 +6828,25 @@ function runSmokeTest(w) {
               spreadProbe.btnContinuous = document.getElementById("btn-mode-continuous").classList.contains("checked") &&
                 !document.getElementById("btn-mode-one").classList.contains("checked") &&
                 !document.getElementById("btn-mode-spread").classList.contains("checked");
+              // ── keyboard: Ctrl+1 / Ctrl+2 / Ctrl+3 switch the page mode ──
+              // the numbered twins of the View menu items — one page, two
+              // pages (book spread), continuous scroll — must reach setViewMode
+              // (and persist) from the global keydown handler
+              const kd = (key) => document.dispatchEvent(new KeyboardEvent("keydown",
+                { key, ctrlKey: true, bubbles: true, cancelable: true }));
+              kd("2");
+              await sleep(150);
+              spreadProbe.kbSpread = app4.viewMode === "spread" &&
+                localStorage.getItem("volt:view-mode") === "spread" &&
+                document.getElementById("btn-mode-spread").classList.contains("checked");
+              kd("1");
+              await sleep(150);
+              spreadProbe.kbOne = app4.viewMode === "one" &&
+                document.getElementById("btn-mode-one").classList.contains("checked");
+              kd("3");
+              await sleep(150);
+              spreadProbe.kbContinuous = app4.viewMode === "continuous" &&
+                document.getElementById("btn-mode-continuous").classList.contains("checked");
               if (prevMode === "spread" || prevMode === "one" || prevMode === "continuous") set(prevMode);
               if (prevStored === null) localStorage.removeItem("volt:view-mode");
             } catch (e) { spreadProbe.error = String((e && (e.stack || e.message)) || e); }
@@ -6775,13 +6862,107 @@ function runSmokeTest(w) {
               spreadProbe.keyFlipBack === true &&
               spreadProbe.classOff === true && spreadProbe.column === true &&
               spreadProbe.persistedBack === true && spreadProbe.btnContinuous === true &&
+              spreadProbe.kbSpread === true && spreadProbe.kbOne === true &&
+              spreadProbe.kbContinuous === true &&
+              spreadProbe.pairLabel === true && spreadProbe.pairLabelCentered === true &&
+              spreadProbe.thumbPair === true && spreadProbe.loneLabel === true &&
+              spreadProbe.thumbLone === true &&
               !spreadProbe.error;
+            // ── bookmarks: Markup ▸ Bookmark this page + thumbnail right-click ──
+            // adding a bookmark never requires the panel: the Markup menu item
+            // bookmarks the page in view, and right-clicking a sidebar page
+            // thumbnail pops a small menu to bookmark that page (or remove its
+            // bookmarks). Both land in Volt.Bm.list and the badge updates.
+            const bmProbe = { error: null };
+            try {
+              const app5 = window.Volt.App;
+              const sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+              const bm = window.Volt.Bm;
+              const prevList = bm.list.slice();
+              bm.list = []; bm.refreshAll(); // clean slate for the probe
+              bmProbe.menuItem = !!document.getElementById("btn-bm-now") &&
+                document.getElementById("btn-bm-now").getAttribute("role") === "menuitem";
+              // Markup ▸ Bookmark this page → bookmarks the current page
+              const curPage = app5._currentPageNum();
+              document.getElementById("btn-bm-now").click();
+              bmProbe.menuAdds = bm.list.length === 1 && bm.list[0].page === curPage;
+              bmProbe.badge = document.getElementById("bm-badge").textContent === "1" &&
+                !document.getElementById("bm-badge").hidden;
+              // thumbnail right-click: menu appears with the page number
+              const thumb = document.querySelector('.thumb-item[data-page="2"]');
+              const tRect = thumb.getBoundingClientRect();
+              thumb.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: tRect.left + 10, clientY: tRect.top + 10 }));
+              const tMenu = document.getElementById("thumb-bm-menu");
+              bmProbe.menuShown = tMenu.hidden === false &&
+                document.getElementById("thumb-bm-add-label").textContent === "Bookmark page 2" &&
+                document.getElementById("thumb-bm-remove").hidden === true; // page 2 has none yet
+              document.getElementById("thumb-bm-add").click();
+              bmProbe.thumbAdds = bm.list.some((b) => b.page === 2) &&
+                bm.list.length === 2 && bm.list[0].page === curPage;
+              bmProbe.closesAfterAction = tMenu.hidden === true;
+              // right-click again: now the remove item appears and works
+              thumb.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: tRect.left + 10, clientY: tRect.top + 10 }));
+              bmProbe.removeShown = tMenu.hidden === false &&
+                document.getElementById("thumb-bm-remove").hidden === false;
+              document.getElementById("thumb-bm-remove").click();
+              bmProbe.removeWorks = !bm.list.some((b) => b.page === 2) && bm.list.length === 1;
+              // outside click closes an open menu
+              thumb.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: tRect.left + 10, clientY: tRect.top + 10 }));
+              document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 5, clientY: 5 }));
+              bmProbe.outsideCloses = tMenu.hidden === true;
+              // outline tree: bookmarks are pinned as a special section on top
+              // of the document outline, sorted by page, jumping on click, and
+              // live-synced as bookmarks come and go
+              document.querySelector('.side-tab[data-tab="outline"]').click();
+              let bmSec = document.querySelector(".outline-bm-section");
+              bmProbe.outlineSec = !!bmSec &&
+                document.querySelector(".outline-bm-count").textContent === "1" &&
+                bmSec.querySelectorAll(".outline-bm-item").length === 1 &&
+                !!bmSec.querySelector('.outline-bm-item[data-page="' + curPage + '"]');
+              const pB = (curPage === 2) ? 3 : 2; // a second, distinct page
+              bm.add(pB, "Outline jump");
+              bmSec = document.querySelector(".outline-bm-section");
+              const pages = [...bmSec.querySelectorAll(".outline-bm-item")].map((d) => Number(d.dataset.page));
+              bmProbe.outlineTwo = !!bmSec &&
+                document.querySelector(".outline-bm-count").textContent === "2" &&
+                pages.length === 2 && pages[0] === Math.min(curPage, pB) &&
+                pages[1] === Math.max(curPage, pB);
+              // clicking a bookmark row jumps to that page (spy goToPage so the
+              // probe isn't at the mercy of smooth-scroll timing in the window)
+              const realGo = app5.goToPage.bind(app5);
+              let jumpTarget = null;
+              app5.goToPage = (p) => { jumpTarget = p; };
+              bmSec.querySelector('.outline-bm-item[data-page="' + pB + '"]').click();
+              app5.goToPage = realGo;
+              bmProbe.outlineJump = jumpTarget === pB;
+              // removing a bookmark live-refreshes the pinned section
+              const toDrop = bm.list.find((b) => b.page === pB);
+              bm.remove(toDrop.id);
+              bmSec = document.querySelector(".outline-bm-section");
+              bmProbe.outlineSync = !!bmSec &&
+                document.querySelector(".outline-bm-count").textContent === "1" &&
+                bmSec.querySelectorAll(".outline-bm-item").length === 1;
+              // clearing the last bookmark removes the section entirely
+              bm.list = []; bm.refreshAll();
+              bmProbe.outlineGone = !document.querySelector(".outline-bm-section");
+              // restore the pre-probe bookmark set + the pages tab
+              bm.list = prevList; bm.refreshAll();
+              document.querySelector('.side-tab[data-tab="pages"]').click();
+            } catch (e) { bmProbe.error = String((e && (e.stack || e.message)) || e); }
+            bmProbe.allOk = bmProbe.menuItem === true && bmProbe.menuAdds === true &&
+              bmProbe.badge === true && bmProbe.menuShown === true && bmProbe.thumbAdds === true &&
+              bmProbe.closesAfterAction === true && bmProbe.removeShown === true &&
+              bmProbe.removeWorks === true && bmProbe.outsideCloses === true &&
+              bmProbe.outlineSec === true && bmProbe.outlineTwo === true &&
+              bmProbe.outlineJump === true && bmProbe.outlineSync === true &&
+              bmProbe.outlineGone === true && !bmProbe.error;
             return {
-              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && aboutModal.allOk && ocr.allOk && office.allOk && isoProbe.allOk && signProbe.allOk && spreadProbe.allOk,
+              ok: hiddenOk && visibleOk && vendorBootErrors.allOk && modal.allOk && modalCycle.allOk && helpC.allOk && setup.allOk && watch.allOk && fpStage.allOk && rs.allOk && rurl.allOk && tlMove.allOk && lineSel.allOk && notesDel.allOk && voice.allOk && boot.allOk && dup.allOk && nudge.allOk && rotArea.allOk && sizeBadge.allOk && rectTool.allOk && pageMgr.allOk && swCache.allOk && htmlCache.allOk && verBanner.allOk && aboutModal.allOk && ocr.allOk && office.allOk && isoProbe.allOk && signProbe.allOk && spreadProbe.allOk && bmProbe.allOk,
               voice,
               bootstrap: boot,
               ocr,
               spreadProbe,
+              bmProbe,
               hiddenProbe,
               visibleProbe,
               vendorBootErrors,

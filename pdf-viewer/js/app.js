@@ -141,7 +141,9 @@
         thumbMoveHint: $("thumb-move-hint"), thumbMoveGo: $("thumb-move-go"), thumbMoveCancel: $("thumb-move-cancel"),
         notesBadge: $("notes-badge"), btnClearNotes: $("btn-clear-notes"), btnManagePages: $("btn-manage-pages"),
         bmList: $("bm-list"), bmBadge: $("bm-badge"), bmFilter: $("bm-filter"),
-        btnBmAdd: $("btn-bm-add"), btnBmClear: $("btn-bm-clear"),
+        btnBmAdd: $("btn-bm-add"), btnBmClear: $("btn-bm-clear"), btnBmNow: $("btn-bm-now"),
+        thumbBmMenu: $("thumb-bm-menu"), thumbBmAdd: $("thumb-bm-add"), thumbBmRemove: $("thumb-bm-remove"),
+        thumbBmAddLabel: $("thumb-bm-add-label"), thumbBmRemoveLabel: $("thumb-bm-remove-label"),
         btnThumbSelAnn: $("btn-thumb-select-ann"),
         pagesModal: $("pages-modal"), pagesModalSub: $("pages-modal-sub"), pagesPlanGrid: $("pages-plan-grid"),
         pagesSelInfo: $("pages-sel-info"), pagesEditNote: $("pages-edit-note"),
@@ -391,6 +393,10 @@
       });
       if (el.btnCheckUpdates) el.btnCheckUpdates.addEventListener("click", () => this._checkForUpdates());
       if (el.btnSavePdf) el.btnSavePdf.addEventListener("click", () => this._savePdf());
+      // Markup ▸ Bookmark this page — bookmark the page in view without the panel
+      if (el.btnBmNow && global.Volt.Bm) {
+        el.btnBmNow.addEventListener("click", () => global.Volt.Bm.addBookmark());
+      }
       if (el.btnExit) el.btnExit.addEventListener("click", () => this._quitApp());
       if (el.aboutClose) el.aboutClose.addEventListener("click", () => this._closeModal(el.aboutModal));
       // Exit only makes sense in the desktop app (a browser tab has nothing
@@ -1420,6 +1426,21 @@
         this._applyThumbSel();
         this.goToPage(page);
       });
+      // right-click a thumbnail: bookmark that page (or remove its bookmarks)
+      // without opening the Bookmarks panel
+      el.thumbGrid.addEventListener("contextmenu", (e) => {
+        const t = e.target.closest(".thumb-item");
+        if (!t) return;
+        e.preventDefault();
+        this._openThumbBmMenu(e, parseInt(t.dataset.page, 10));
+      });
+      // the menu closes on any outside click / Escape / scroll — never lingers
+      const closeThumbMenu = () => this._closeThumbBmMenu();
+      document.addEventListener("mousedown", (e) => {
+        if (this._thumbBmMenuOpen && el.thumbBmMenu && !el.thumbBmMenu.contains(e.target)) closeThumbMenu();
+      });
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape" && this._thumbBmMenuOpen) closeThumbMenu(); });
+      document.addEventListener("scroll", closeThumbMenu, true); // any scrollable, incl. the sidebar
       // drag-reorder the document DIRECTLY from the sidebar: grabbing a thumb
       // (or a Shift+click multi-selected BLOCK) and dropping it at another
       // position rebuilds the doc with that page order (the same machinery as
@@ -3091,6 +3112,7 @@
       if (this._closeMenus) this._closeMenus(); // a toolbar menu must not float over a modal backdrop
       if (global.Volt.AI) { global.Volt.AI._closeDocPopover(); if (global.Volt.AI._closeGlobalPop) global.Volt.AI._closeGlobalPop(); if (global.Volt.AI._hideMarkerTip) global.Volt.AI._hideMarkerTip(); } // never float over a modal backdrop
       if (global.Volt.Ann && global.Volt.Ann._areaMenuOpen) global.Volt.Ann._closeAreaMenu();
+      this._closeThumbBmMenu(); // a modal outranks the thumbnail bookmark menu too
       this._hideRestoreSummary(); // a modal outranks a transient status card
       this._lastFocus = document.activeElement;
       m.hidden = false;
@@ -3149,6 +3171,7 @@
         ["Navigate menu items · switch menu", "↑ / ↓ / ← / → · Enter"],
         ["Zoom in / out", "Ctrl + / Ctrl −"],
         ["Fit width / fit page", "W / P"],
+        ["Page mode — one page / two pages / continuous", "Ctrl+1 / Ctrl+2 / Ctrl+3"],
         ["Rotate", "R"],
         ["Prev / next page", "↑ / ↓ or PgUp / PgDn"],
         ["First / last page", "Home / End"],
@@ -3227,22 +3250,26 @@
     /** First-run hint (replaces the old setup-banner popup): when setup was
         never answered, a small pill appears in the blank toolbar area, holds
         for a moment, then slides left behind the Volt ▾ menu. It plays once,
-        needs no dismissal, and never blocks reading. (force bypasses the
-        smoke suppression so the self-test can probe it.) */
+        needs no dismissal, and never blocks reading. Under
+        prefers-reduced-motion the entrance and exit are pure FADES (no
+        horizontal travel). (force bypasses the smoke suppression so the
+        self-test can probe it.) */
     _maybeShowStartHint(force) {
       const el = this.elements;
       if (!el.startHint) return;
       if (!force && new URLSearchParams(location.search).has("smoke")) return;
       try { if (localStorage.getItem(SETUP_KEY) !== null) return; } catch (e) { return; }
       const hint = el.startHint;
+      const reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
       hint.hidden = false;
       hint.dataset.playing = "1";
-      // fade in, hold, then glide left to slide behind the brand menu
+      // fade in (gliding in from the right, or a pure fade when the user
+      // prefers reduced motion), hold, then leave left behind the brand menu
       hint.animate([
-        { opacity: 0, transform: "translateX(16px)" },
+        { opacity: 0, transform: reduced ? "none" : "translateX(16px)" },
         { opacity: 1, transform: "translateX(0)" },
       ], { duration: 480, easing: "ease-out", delay: 900, fill: "backwards" });
-      const slide = () => {
+      const leave = () => {
         if (hint.hidden) return; // clicked away while waiting
         let dx = 40;
         const brand = document.getElementById("btn-brand");
@@ -3252,13 +3279,13 @@
           dx = Math.max(40, h.left - b.left + 8); // travel past the brand's right edge
         }
         const anim = hint.animate([
-          { opacity: 1, transform: "translateX(0)" },
-          { opacity: 0, transform: `translateX(${-dx}px)` },
-        ], { duration: 900, easing: "cubic-bezier(.55,0,.7,.35)", fill: "forwards" });
+          { opacity: 1, transform: reduced ? "none" : "translateX(0)" },
+          { opacity: 0, transform: reduced ? "none" : `translateX(${-dx}px)` },
+        ], { duration: reduced ? 480 : 900, easing: reduced ? "ease-out" : "cubic-bezier(.55,0,.7,.35)", fill: "forwards" });
         hint.dataset.playing = "0";
         anim.onfinish = () => { hint.hidden = true; }; // free the toolbar space it held
       };
-      this._startHintTimer = setTimeout(slide, 900 + 480 + 3400);
+      this._startHintTimer = setTimeout(leave, 900 + 480 + 3400);
     },
     _startHintClick() {
       const hint = this.elements.startHint;
@@ -3641,6 +3668,7 @@
       this._thumbSel = null; // a new document invalidates the multi-selection
       this._thumbSelAnchor = null; // …and its range anchor with it
       this._thumbReorderPending = null;
+      this._closeThumbBmMenu(); // a new document invalidates the page menu
       this._applyThumbSel(); // …and that hides the block-action row + move form with it
       this._clearThumbDragPreview();
       this.elements.pages.innerHTML = "";
@@ -3955,7 +3983,26 @@
         wrap.dataset.page = pageNum;
         wrap.style.width = vp.width + "px";
         wrap.style.height = vp.height + "px";
-        wrap.dataset.label = pageNum;
+        // page label under each page — or, in Two-pages mode, the SPREAD label
+        // ("1–2") centered under the whole pair: the left page carries it
+        // (positioned at --pair-x = the pair's horizontal midpoint), the right
+        // page none, and a lone trailing page keeps its own number
+        if (this.viewMode === "spread") {
+          const leftOfPair = (pageNum % 2) === 1;
+          if (leftOfPair && pageNum < this.pageDims.length) {
+            wrap.dataset.label = pageNum + "–" + (pageNum + 1);
+            wrap.dataset.pairLabel = "";
+            const wA = this.pageDims[pageNum - 1].w * this.zoom;
+            const wB = this.pageDims[pageNum].w * this.zoom;
+            wrap.style.setProperty("--pair-x", ((wA + 30 + wB) / 2) + "px");
+          } else if (leftOfPair) {
+            wrap.dataset.label = pageNum;
+          } else {
+            wrap.dataset.label = "";
+          }
+        } else {
+          wrap.dataset.label = pageNum;
+        }
         this._insertWrap(wrap, pageNum);
 
         // canvas
@@ -4315,6 +4362,7 @@
       z = Utils.clamp(z, 0.15, 5);
       this.zoom = z;
       if (global.Volt.Ann && global.Volt.Ann._areaMenuOpen) global.Volt.Ann._closeAreaMenu(); // stale fixed position after zoom
+      this._closeThumbBmMenu();
       // keep the same document point under the viewport center
       const scroller = this.elements.scroller;
       const anchorPdf = keepFocus ? this._viewportAnchorToPdf() : null;
@@ -4793,20 +4841,82 @@
     },
     _updateThumbActive() {
       const cur = this._currentPageNum();
+      const active = new Set();
+      if (this.viewMode === "spread") {
+        // the current SPREAD is the pair containing `cur` — both pages are on
+        // screen, so both thumbnails light up together (a lone trailing page
+        // marks just itself)
+        const first = (cur % 2 === 1) ? cur : cur - 1;
+        if (first >= 1) {
+          active.add(first);
+          if (first < this.pageLayout.length) active.add(first + 1);
+        }
+      } else {
+        active.add(cur);
+      }
       this.elements.thumbGrid.querySelectorAll(".thumb-item").forEach((t) => {
-        t.classList.toggle("active", parseInt(t.dataset.page, 10) === cur);
+        t.classList.toggle("active", active.has(parseInt(t.dataset.page, 10)));
       });
     },
 
     /* ── outline ───────────────────────────────────────────── */
+    /** A special "Bookmarked pages" section pinned to the TOP of the Outline
+        tree, so the user's own jump marks live on the same navigation surface
+        as the document's outline. Rows are sorted by page; clicking one jumps
+        to that page. Refreshed live by Volt.Bm.refreshAll(). */
+    _renderOutlineBookmarks(tree) {
+      tree.querySelectorAll(".outline-bm-section").forEach((s) => s.remove());
+      const bms = (Volt.Bm && Volt.Bm.list) || [];
+      if (!bms.length) return;
+      const sorted = [...bms].sort((a, b) => (a.page - b.page) || (a.createdAt - b.createdAt));
+      const sec = document.createElement("div");
+      sec.className = "outline-bm-section";
+      sec.setAttribute("role", "group");
+      sec.setAttribute("aria-label", "Bookmarked pages");
+      const head = document.createElement("div");
+      head.className = "outline-bm-head";
+      head.innerHTML =
+        '<span class="outline-bm-ic" aria-hidden="true">' +
+        '<svg viewBox="0 0 24 24"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg></span>' +
+        'Bookmarked pages <span class="outline-bm-count">' + bms.length + "</span>";
+      sec.appendChild(head);
+      for (const bm of sorted) {
+        const div = document.createElement("div");
+        div.className = "outline-item outline-bm-item";
+        div.dataset.page = bm.page;
+        div.title = "Jump to bookmark: " + (bm.label || "Page " + bm.page);
+        div.innerHTML =
+          '<span class="outline-pg">p.' + bm.page + "</span>" +
+          '<span class="outline-bm-label">' + Utils.esc(bm.label || "Page " + bm.page) + "</span>";
+        div.addEventListener("click", () => this.goToPage(bm.page));
+        sec.appendChild(div);
+      }
+      tree.prepend(sec); // always above the document's own outline entries
+    },
+    /** Keep the pinned section current when bookmarks change (called from
+        Volt.Bm.refreshAll). Renders into the tree even while a fresh
+        _loadOutline is still awaiting getOutline — prepend keeps the section
+        on top, and the outline entries land after it when they resolve. */
+    _refreshOutlineBookmarks() {
+      const tree = this.elements.outlineTree;
+      if (!tree) return;
+      this._renderOutlineBookmarks(tree);
+    },
     async _loadOutline() {
       const doc = this.currentDoc;
       if (!doc) return;
-      const outline = await doc.getOutline();
       const tree = this.elements.outlineTree;
       tree.innerHTML = "";
+      this._renderOutlineBookmarks(tree); // pinned section renders immediately
+      const outline = await doc.getOutline();
+      // a bookmark added while getOutline() was pending rendered its section
+      // already; re-render now so the section sits above the outline entries
+      // that just landed (and reflects any change made mid-await)
+      this._renderOutlineBookmarks(tree);
       if (!outline || !outline.length) {
-        tree.innerHTML = '<div class="notes-empty">This document has no outline.</div>';
+        if (!(Volt.Bm && Volt.Bm.list && Volt.Bm.list.length)) {
+          tree.innerHTML = '<div class="notes-empty">This document has no outline.</div>';
+        }
         return;
       }
       const walk = (items, depth) => {
@@ -5249,8 +5359,8 @@
       const el = this.elements;
       const esc = Utils.esc;
       el.restoreMsg.innerHTML = currentName
-        ? `This backup is for <b>${esc(backupName)}</b>, but <b>${esc(currentName)}</b> is open.<br><br>Open the matching PDF to restore its annotations, AI overrides, and chat there — or import into the current document anyway.`
-        : `This backup is for <b>${esc(backupName)}</b>.<br><br>Open that PDF to restore its annotations, AI overrides, and chat — nothing is applied until a document is open.`;
+        ? `This backup is for <b>${esc(backupName)}</b>, but <b>${esc(currentName)}</b> is open.<br><br>Open the matching PDF to restore its annotations, bookmarks, AI overrides, and chat there — or import into the current document anyway.`
+        : `This backup is for <b>${esc(backupName)}</b>.<br><br>Open that PDF to restore its annotations, bookmarks, AI overrides, and chat — nothing is applied until a document is open.`;
       el.restoreAnyway.hidden = !currentName;
       this._openModal(el.restoreModal);
     },
@@ -5299,6 +5409,8 @@
       const chatCount = chatInBackup
         ? (Array.isArray(Volt.AI.messages) ? Volt.AI.messages.length : data.chatHistory.length)
         : 0;
+      const bmInBackup = !!(data && Array.isArray(data.bookmarks));
+      const bmCount = bmInBackup && Volt.Bm && Array.isArray(Volt.Bm.list) ? Volt.Bm.list.length : 0;
       const rows = Utils.restoreSummaryRows({
         annCount: ann.length,
         notes,
@@ -5306,6 +5418,8 @@
         aiInBackup,
         chatInBackup,
         chatCount,
+        bmInBackup,
+        bmCount,
       });
       clearTimeout(this._restoreSummaryTimer);
       // un-hide BEFORE writing the rows: a live region (role="status") only
@@ -5439,6 +5553,31 @@
         this._layoutPages();
         this._onScroll();
       }, 260);
+    },
+    /** Thumbnail right-click menu: bookmark that page (or remove its
+        bookmarks) without opening the Bookmarks panel. Positioned at the
+        cursor, clamped inside the window; [hidden] owns open/close. */
+    _openThumbBmMenu(e, page) {
+      const el = this.elements;
+      if (!el.thumbBmMenu || !global.Volt.Bm || !this.currentDoc) return;
+      if (!page || page < 1 || page > this.pageLayout.length) return;
+      const onPage = global.Volt.Bm.list.filter((b) => b.page === page);
+      el.thumbBmAddLabel.textContent = "Bookmark page " + page;
+      el.thumbBmRemove.hidden = onPage.length === 0;
+      el.thumbBmRemoveLabel.textContent = "Remove bookmark" + (onPage.length > 1 ? "s" : "") + " on page " + page;
+      el.thumbBmAdd.onclick = () => { this._closeThumbBmMenu(); global.Volt.Bm.add(page); };
+      el.thumbBmRemove.onclick = () => { this._closeThumbBmMenu(); global.Volt.Bm.removePageBookmarks(page); };
+      el.thumbBmMenu.hidden = false;
+      const mw = el.thumbBmMenu.offsetWidth || 232, mh = el.thumbBmMenu.offsetHeight || 90;
+      el.thumbBmMenu.style.left = Math.max(8, Math.min(e.clientX, window.innerWidth - mw - 8)) + "px";
+      el.thumbBmMenu.style.top = Math.max(8, Math.min(e.clientY, window.innerHeight - mh - 8)) + "px";
+      this._thumbBmMenuOpen = true;
+    },
+    _closeThumbBmMenu() {
+      if (!this._thumbBmMenuOpen) return false;
+      this._thumbBmMenuOpen = false;
+      this.elements.thumbBmMenu.hidden = true;
+      return true;
     },
     /** Open the sidebar's Bookmarks tab (used by the toolbar button, the page
         ribbon markers, and Ctrl+Shift+B). Re-opening on the same tab clears
@@ -5607,11 +5746,17 @@
         if (inInput) {
           if (mod && !e.altKey) {
             const k = e.key.toLowerCase();
-            if (k === "o") { e.preventDefault(); this.elements.fileInput.click(); return; }
-            if (k === "j") { e.preventDefault(); this.toggleAI(); return; }
-            if (k === "b") { e.preventDefault(); this.toggleSidebar(); return; }
-            if (k === "b" && e.shiftKey) { e.preventDefault(); this.openBookmarksPanel(); return; }
-            if (k === "p" && e.shiftKey) { e.preventDefault(); this.openPagesManager(); return; }
+            if (k === "o") { e.preventDefault(); this.elements.fileInput.click(); return; }          if (k === "j") { e.preventDefault(); this.toggleAI(); return; }
+          if (k === "b") { e.preventDefault(); this.toggleSidebar(); return; }
+          if (k === "b" && e.shiftKey) { e.preventDefault(); this.openBookmarksPanel(); return; }
+          if (k === "p" && e.shiftKey) { e.preventDefault(); this.openPagesManager(); return; }
+            // page mode: Ctrl+1 = one page, Ctrl+2 = two pages (book spread),
+            // Ctrl+3 = continuous scroll — the numbered layout-density twins
+            // of the View menu items (harmless inside inputs: digit keys only
+            // type without Ctrl)
+            if (k === "1") { e.preventDefault(); this.setViewMode("one"); return; }
+            if (k === "2") { e.preventDefault(); this.setViewMode("spread"); return; }
+            if (k === "3") { e.preventDefault(); this.setViewMode("continuous"); return; }
           }
           if (e.key === "Escape" && target.id === "search-input") { this.clearSearch(); target.value = ""; target.blur(); }
           // Escape in the sidebar's move-form input closes the form (the
@@ -5640,6 +5785,11 @@
           if (k === "j") { e.preventDefault(); this.toggleAI(); return; }
           if (k === "b") { e.preventDefault(); this.toggleSidebar(); return; }
           if (k === "b" && e.shiftKey) { e.preventDefault(); this.openBookmarksPanel(); return; }
+          // page mode (View ▾): Ctrl+1 = one page, Ctrl+2 = two pages (book
+          // spread), Ctrl+3 = continuous scroll
+          if (k === "1") { e.preventDefault(); this.setViewMode("one"); return; }
+          if (k === "2") { e.preventDefault(); this.setViewMode("spread"); return; }
+          if (k === "3") { e.preventDefault(); this.setViewMode("continuous"); return; }
           if (k === "d" && !e.shiftKey) {
             // duplicate the selected highlight (area or text) with a slight
             // offset — repeated presses stamp a column for form repetition.

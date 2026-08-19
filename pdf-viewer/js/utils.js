@@ -534,7 +534,7 @@
         settings ({model, maxContextChars, systemPrompt}) shown when the
         backup carried aiSettings; chatCount is the live message count when
         the backup carried chatHistory. */
-    restoreSummaryRows({ annCount = 0, notes = 0, ai = null, aiInBackup = false, chatInBackup = false, chatCount = 0 } = {}) {
+    restoreSummaryRows({ annCount = 0, notes = 0, ai = null, aiInBackup = false, chatInBackup = false, chatCount = 0, bmInBackup = false, bmCount = 0 } = {}) {
       const p = (n) => (n === 1 ? "" : "s");
       const marks = annCount - notes;
       let annTxt = annCount + " annotation" + p(annCount);
@@ -543,6 +543,11 @@
         if (notes) annTxt += " · " + notes + " note" + p(notes);
       }
       const rows = [{ k: "Annotations", v: annTxt, title: annTxt }];
+      if (bmInBackup) {
+        rows.push({ k: "Bookmarks", v: bmCount + " bookmark" + p(bmCount), title: bmCount + " bookmark" + p(bmCount) });
+      } else {
+        rows.push({ k: "Bookmarks", v: "Not in this backup", title: "This backup didn't include bookmarks" });
+      }
       if (aiInBackup) {
         const eff = (ai && typeof ai === "object") ? ai : {};
         const parts = [];
@@ -664,12 +669,21 @@
     PDF_PAD: new Uint8Array([0x28, 0xbf, 0x4e, 0x5e, 0x4e, 0x75, 0x8a, 0x41, 0x64, 0x00, 0x4e, 0x56, 0xff, 0xfa, 0x01, 0x08,
       0x2e, 0x2e, 0x00, 0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53, 0x69, 0x7a]),
 
+    /** Pad a password to the 32-byte pad block (ISO 32000-1 §7.6.3.3): the
+        password's chars as LOW bytes (charCodeAt & 255 — the exact conversion
+        pdf.js applies to a typed password via stringToBytes), then append the
+        FIRST (32 − n) bytes of the pad string. Both the spec and every reader
+        (pdf.js, pdf-lib, Acrobat) append the pad's head, so U/O match what the
+        reader re-derives when the user types the same password. (R=2 has no
+        UTF-8; matching the reader is the only way a non-ASCII password opens.) */
     _pdfPad(pw) {
-      const s = new TextEncoder().encode(String(pw == null ? "" : pw));
-      if (s.length >= 32) return s.slice(0, 32);
+      const s = String(pw == null ? "" : pw);
+      const bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 255;
+      if (bytes.length >= 32) return bytes.slice(0, 32);
       const out = new Uint8Array(32);
-      out.set(s);
-      out.set(this.PDF_PAD.subarray(s.length));
+      out.set(bytes);
+      out.set(this.PDF_PAD.subarray(0, 32 - bytes.length), bytes.length);
       return out;
     },
 
@@ -694,8 +708,11 @@
       const owner = String(ownerPassword == null ? "" : ownerPassword).length
         ? this._pdfPad(ownerPassword)
         : user; // no owner password → the user password IS the owner password
-      // O (Algorithm 3, R=2): RC4(MD5(padded owner), padded user)
-      const O = this.rc4(this.md5(owner), user);
+      // O (Algorithm 3, R=2): RC4 with the FIRST n bytes (n = key length,
+      // 5 for R=2/40-bit) of MD5(padded owner) as the key over the padded
+      // user password — the full-hash key is what every reader (pdf.js #W)
+      // rejects, so owner-password entry must match the truncated key.
+      const O = this.rc4(this.md5(owner).slice(0, 5), user);
       // encryption key (Algorithm 2, R=2): first 5 bytes of MD5(user+O+P+ID0)
       const keyInput = new Uint8Array(user.length + O.length + 4 + (id0 ? id0.length : 0));
       keyInput.set(user); keyInput.set(O, 32);

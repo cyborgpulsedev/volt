@@ -179,7 +179,69 @@ What you should see in the run (`Build · sign · publish`):
 | `status` shows `Volt Dev Signing` | `.env` still points at the dev cert — re-run `import` |
 | CI release fails at "Signed release" with REFUSING self-signed | Secrets still hold the dev cert — redo step 5 |
 | CI fails the stale-tag guard | Tag predates current main — re-cut: `git tag -f -a v1.0.1 -F release-notes-v1.0.1.md && git push -f origin v1.0.1` |
+| Release exists but the feed 404s, or two releases appear for one tag | The three pipeline bugs the scratch runs exposed — draft default, two-publisher race, schema staleness (see *What the scratch runs exposed* below) |
 | Renewal changed the publisher | Keep the subject; or plan a manual reinstall for existing users |
+
+## What the scratch runs exposed: three pipeline bugs
+
+The first **scratch unsigned releases** (the escape hatch for proving the
+publish/feed mechanics before a real cert lands) are what actually found
+all three of these bugs. From the outside each one looked the same —
+"the release never reached the feed" — so keep them in mind when a
+publish misbehaves. Each is fixed in the pipeline and guarded by the
+checks below, but they're a useful map of what can go wrong.
+
+### 1. Releases shipped as drafts (the draft default)
+
+**Symptom:** the release exists on the repo, but `releases/latest`
+doesn't list it, its assets aren't downloadable, and the auto-update
+feed (`latest.yml`) 404s.
+
+**Cause:** electron-builder's GitHub provider creates **draft** releases
+by default (its own `options.draft === false ? "release" : "draft"`
+logic — draft when the field is unset). Drafts are invisible to
+`releases/latest` and their assets are never served, so every release
+this pipeline made would have missed the feed entirely.
+
+**Fix:** `build.publish.draft: false` (later superseded — see #3).
+
+**Guard:** the CI feed-reachability step — once a release exists, a feed
+that 404s fails the battery instead of shipping silently.
+
+### 2. The two-publisher race
+
+**Symptom:** **two releases** for the same tag, assets split between
+them, `latest.yml` broken or missing entirely.
+
+**Cause:** electron-builder's GitHub provider resolves its release
+**concurrently** for the `.blockmap` and the installer; both see
+"release doesn't exist" and both create one — seen live on the first
+scratch runs as two live releases with split assets.
+
+**Fix:** the workflow **pre-creates** the release (title + the
+`release-notes.md` body) before electron-builder runs, so both
+publishers find and reuse the same release. Retries reuse it at any age
+(`EP_GH_IGNORE_TIME`), and a stale draft is force-published so the feed
+can't 404.
+
+**Guard:** the pre-create dedupe plus the post-publish feed check — a
+publish that left the release empty or stale fails the run immediately.
+
+### 3. Schema staleness (electron-builder 26)
+
+**Symptom:** after the electron-builder **v26** upgrade, releases
+silently went back to drafts even though `draft: false` was still in
+`build.publish`.
+
+**Cause:** v26's publish schema **rejects the legacy `draft` boolean** —
+the correct field is `releaseType`, and it **defaults to `"draft"`**.
+The old `draft: false` became a no-op, so drafts quietly came back.
+
+**Fix:** `releaseType: "release"` in `build.publish` (the electron-
+builder 26 schema).
+
+**Guard:** the same feed checks — any regression back to drafts
+re-triggers the #1 symptom and fails CI on the next push.
 
 ## Alternative: Azure Trusted Signing
 
